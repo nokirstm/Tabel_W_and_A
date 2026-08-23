@@ -10,7 +10,7 @@ source.include_patterns = assets/*
 
 version = 1.0.0
 
-requirements = python3,kivy
+requirements = python3==3.11,kivy
 
 orientation = portrait
 fullscreen = 0

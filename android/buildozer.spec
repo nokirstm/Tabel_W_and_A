@@ -36,6 +36,7 @@ android.softinput_mode = below_target
 
 p4a.branch = master
 p4a.bootstrap = sdl2
+p4a.python_version = 3.11
 [buildozer]
 log_level = 2
 warn_on_root = 0

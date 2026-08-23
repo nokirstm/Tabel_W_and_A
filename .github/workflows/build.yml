@@ -62,6 +62,11 @@ jobs:
       - name: Копирование общего ядра в проект
         run: cp core/timecard_core.py core/reports.py android/
 
+      - name: Настройка переменных окружения
+        run: |
+          echo "ANDROID_NDK_HOME=$HOME/.buildozer/android/platform/android-ndk-r25b" >> $GITHUB_ENV
+          echo "ANDROID_NDK=$HOME/.buildozer/android/platform/android-ndk-r25b" >> $GITHUB_ENV
+
       - name: Сборка apk
         working-directory: android
         run: buildozer -v android debug

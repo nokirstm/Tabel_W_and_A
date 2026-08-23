@@ -10,7 +10,7 @@ source.include_patterns = assets/*
 
 version = 1.0.0
 
-requirements = python3,kivy==2.2.1
+requirements = python3,kivy==2.1.0
 
 orientation = portrait
 fullscreen = 0
@@ -34,7 +34,7 @@ android.accept_sdk_license = True
 android.manifest.orientation = portrait
 android.softinput_mode = below_target
 
-p4a.branch = develop
+p4a.branch = master
 p4a.bootstrap = sdl2
 [buildozer]
 log_level = 2

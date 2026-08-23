@@ -1,0 +1,72 @@
+name: Сборка Tabel (.exe и .apk)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  # ------------------------------------------------------------- WINDOWS .EXE
+  windows-exe:
+    name: Windows — Tabel.exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Установка зависимостей
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r windows/requirements.txt
+
+      - name: Тесты ядра
+        run: python test_core.py
+
+      - name: Сборка exe
+        working-directory: windows
+        run: python -m PyInstaller tabel.spec --noconfirm --clean
+
+      - name: Публикация артефакта
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tabel-windows-exe
+          path: windows/dist/Tabel.exe
+          if-no-files-found: error
+
+  # --------------------------------------------------------------- ANDROID APK
+  android-apk:
+    name: Android — tabel.apk
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Системные пакеты
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git zip unzip openjdk-17-jdk python3-pip \
+            autoconf libtool pkg-config zlib1g-dev libncurses-dev \
+            libtinfo6 cmake libffi-dev libssl-dev
+
+      - name: Buildozer
+        run: pip install --upgrade buildozer cython==0.29.36 virtualenv
+
+      - name: Копирование общего ядра в проект
+        run: cp core/timecard_core.py core/reports.py android/
+
+      - name: Сборка apk
+        working-directory: android
+        run: buildozer -v android debug
+
+      - name: Публикация артефакта
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tabel-android-apk
+          path: android/bin/*.apk
+          if-no-files-found: error

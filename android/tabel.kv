@@ -1,0 +1,60 @@
+#:kivy 2.0
+#:import T timecard_core.THEME
+
+<TLabel@Label>:
+    color: T["text"]
+    font_size: "15sp"
+    font_name: "Regular"
+    text_size: self.width, None
+    halign: "left"
+    valign: "middle"
+    size_hint_y: None
+    height: self.texture_size[1]
+
+<Muted@TLabel>:
+    color: T["text_muted"]
+    font_size: "12sp"
+
+<H2@TLabel>:
+    color: T["accent_dark"]
+    font_size: "17sp"
+    font_name: "Bold"
+
+<TInput@TextInput>:
+    background_normal: ""
+    background_active: ""
+    background_color: T["white"]
+    foreground_color: T["text"]
+    cursor_color: T["accent"]
+    font_size: "18sp"
+    font_name: "Regular"
+    padding: [dp(10), dp(10)]
+    multiline: False
+    size_hint_y: None
+    height: dp(48)
+    canvas.after:
+        Color:
+            rgba: (0.36, 0.61, 0.84, 1) if self.focus else (0.76, 0.82, 0.88, 1)
+        Line:
+            width: 1.2
+            rectangle: self.x, self.y, self.width, self.height
+
+<FlatButton@Button>:
+    background_normal: ""
+    background_down: ""
+    background_color: T["accent"]
+    color: T["white"]
+    font_size: "16sp"
+    font_name: "Bold"
+    size_hint_y: None
+    height: dp(50)
+
+<GhostButton@Button>:
+    background_normal: ""
+    background_down: ""
+    background_color: T["surface_alt"]
+    color: T["text"]
+    font_size: "14sp"
+    font_name: "Regular"
+    size_hint_y: None
+    height: dp(44)

@@ -34,7 +34,7 @@ android.accept_sdk_license = True
 android.manifest.orientation = portrait
 android.softinput_mode = below_target
 
-p4a.branch = 2024.07.14
+p4a.branch = v2024.01.21
 p4a.bootstrap = sdl2
 
 [buildozer]

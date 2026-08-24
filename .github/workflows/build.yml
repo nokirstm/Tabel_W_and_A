@@ -67,6 +67,9 @@ jobs:
           echo "ANDROID_NDK_HOME=$HOME/.buildozer/android/platform/android-ndk-r25b" >> $GITHUB_ENV
           echo "ANDROID_NDK=$HOME/.buildozer/android/platform/android-ndk-r25b" >> $GITHUB_ENV
 
+      - name: Очистка кеша buildozer
+        run: rm -rf android/.buildozer
+
       - name: Сборка apk
         working-directory: android
         run: buildozer -v android debug

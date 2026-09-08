@@ -2,13 +2,13 @@
 
 title = Табель
 package.name = tabel
-package.domain = ru.tabel
+package.domain = ru.tabel.test
 
 source.dir = .
 source.include_exts = py,png,jpg,ttf,kv,json
 source.include_patterns = assets/*
 
-version = 1.0.0
+version = 1.0.0-test
 
 requirements = python3,kivy==2.1.0
 

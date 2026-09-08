@@ -41,6 +41,12 @@ from timecard_core import (THEME as T, DayEntry, Storage, Totals, WEEKDAYS_RU,
                            week_range, week_title, month_title, month_range)
 import reports
 
+# Android system document picker for backups. No FileProvider is needed.
+try:
+    from android import activity as android_activity
+except ImportError:
+    android_activity = None
+
 C = {k: hexc(v) for k, v in T.items()}
 
 # --- шрифты с кириллицей ---
@@ -750,10 +756,19 @@ class SettingsScreen(Screen):
         toast("Настройки сохранены")
 
     def backup(self):
-        p = os.path.join(self.app.data_dir,
-                         "tabel_backup_%s.json" % dt.date.today().isoformat())
+        """Save JSON through Android's system document picker."""
+        p = os.path.join(
+            self.app.data_dir,
+            "tabel_backup_%s.json" % dt.datetime.now().strftime("%Y%m%d_%H%M%S"),
+        )
         self.app.db.export_json(p)
-        toast("Копия: " + os.path.basename(p))
+        if android_activity is None or not os.environ.get("ANDROID_ARGUMENT"):
+            toast("Копия создана: " + p, "ok")
+            return
+        try:
+            self.app.begin_backup_save(p)
+        except Exception as ex:
+            toast("Не удалось открыть окно сохранения: %s" % ex, "warn")
 
 
 # ---------------------------------------------------------------- приложение
@@ -765,6 +780,8 @@ class TabelApp(App):
         os.makedirs(self.data_dir, exist_ok=True)
         self.db = Storage(os.path.join(self.data_dir, "timecard.db"))
         self.current = dt.date.today()
+        self._backup_pending_path = None
+        self._backup_result_bound = False
         Window.clearcolor = C["bg"]
 
         root = BoxLayout(orientation="vertical")
@@ -871,6 +888,58 @@ class TabelApp(App):
         sc.add_widget(lbl)
         Popup(title=title, content=sc, size_hint=(0.92, 0.8),
               title_font=FONTB).open()
+
+    def begin_backup_save(self, path):
+        if self._backup_pending_path:
+            toast("Сохранение уже открыто", "warn")
+            return
+        if android_activity is None:
+            toast("Системное сохранение доступно только на Android", "warn")
+            return
+        self._backup_pending_path = path
+        if not self._backup_result_bound:
+            android_activity.bind(on_activity_result=self._on_backup_result)
+            self._backup_result_bound = True
+        from jnius import autoclass
+        Intent = autoclass("android.content.Intent")
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        intent = Intent(Intent.ACTION_CREATE_DOCUMENT)
+        intent.addCategory(Intent.CATEGORY_OPENABLE)
+        intent.setType("application/json")
+        intent.putExtra(Intent.EXTRA_TITLE, os.path.basename(path))
+        PythonActivity.mActivity.startActivityForResult(intent, 4817)
+
+    def _on_backup_result(self, request_code, result_code, intent):
+        if request_code != 4817:
+            return
+        path = self._backup_pending_path
+        self._backup_pending_path = None
+        if self._backup_result_bound:
+            android_activity.unbind(on_activity_result=self._on_backup_result)
+            self._backup_result_bound = False
+        if result_code != -1 or intent is None:
+            toast("Сохранение отменено", "warn")
+            return
+        try:
+            from jnius import autoclass
+            uri = intent.getData()
+            if uri is None:
+                raise ValueError("Android не вернул URI файла")
+            resolver = autoclass("org.kivy.android.PythonActivity").mActivity.getContentResolver()
+            output = resolver.openOutputStream(uri, "w")
+            if output is None:
+                raise IOError("не удалось открыть файл")
+            with open(path, "rb") as source:
+                while True:
+                    chunk = source.read(65536)
+                    if not chunk:
+                        break
+                    output.write(bytearray(chunk))
+            output.flush()
+            output.close()
+            toast("Резервная копия сохранена", "ok")
+        except Exception as ex:
+            toast("Ошибка записи резервной копии: %s" % ex, "warn")
 
     def share_week(self):
         days = self.db.week_days(self.current)

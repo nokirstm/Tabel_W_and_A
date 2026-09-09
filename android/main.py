@@ -194,6 +194,8 @@ class Toggle(BoxLayout):
                                       self.box.height, dp(6))
 
     def _touch(self, _w, touch):
+        if self.disabled:
+            return False
         if self.collide_point(*touch.pos):
             self.set(not self.active)
             if self.on_toggle:
@@ -336,7 +338,8 @@ class DayScreen(Screen):
         self.r_pay = Row("Оплата за день", "0 ₽")
         self.r_xpay = Row("Доп. работы", "0 ₽")
         self.r_bonus = Row("Премия", "0 ₽")
-        for r in (self.r_hours, self.r_xhours, self.r_pay, self.r_xpay, self.r_bonus):
+        self.r_penalty = Row("Штраф", "0 ₽")
+        for r in (self.r_hours, self.r_xhours, self.r_pay, self.r_xpay, self.r_bonus, self.r_penalty):
             c2.add_widget(r)
         self.r_total = Row("ИТОГО ЗА ДЕНЬ", "0 ₽", bold=True, size=19, color=C["ok"])
         self.r_total.height = dp(34)
@@ -376,6 +379,14 @@ class DayScreen(Screen):
         self.f_bonus = field("Разовая сумма за день, ₽", "0", True, self.recalc)
         c5.add_widget(self.f_bonus)
         body.add_widget(c5)
+
+        # --- штраф (вводит работник, вычитается из итога) ---
+        c6 = Card("Штраф")
+        self.t_penalty = Toggle("Был штраф", lambda *_: self.recalc())
+        c6.add_widget(self.t_penalty)
+        self.f_penalty = field("Сумма штрафа, ₽", "0", True, self.recalc)
+        c6.add_widget(self.f_penalty)
+        body.add_widget(c6)
 
         # --- кнопки ---
         body.add_widget(FlatButton("СОХРАНИТЬ ДЕНЬ", height=56, size=17,
@@ -436,6 +447,10 @@ class DayScreen(Screen):
         e.extra_rate = _f(self.f_xrate.input.text, self.app.db.get_float("extra_rate", 250))
         e.extra_fixed = _f(self.f_xfixed.input.text, 0)
         e.bonus = _f(self.f_bonus.input.text, 0)
+        e.penalty_on = self.t_penalty.get()
+        e.penalty = _f(self.f_penalty.input.text, 0) if e.penalty_on else 0
+        e.penalty_on = self.t_penalty.get()
+        e.penalty = _f(self.f_penalty.input.text, 0) if e.penalty_on else 0
         e.rate = self.app.db.get_float("rate", 250)
         return e
 
@@ -448,6 +463,8 @@ class DayScreen(Screen):
         self.r_pay.value.text = fmt_money(e.day_pay)
         self.r_xpay.value.text = fmt_money(e.extra_pay)
         self.r_bonus.value.text = fmt_money(e.bonus)
+        self.r_penalty.value.text = "-" + fmt_money(e.penalty) if e.penalty else fmt_money(0)
+        self.r_penalty.value.text = "-" + fmt_money(e.penalty) if e.penalty else fmt_money(0)
         self.r_total.value.text = fmt_money(e.total_pay)
 
     def load(self, d):
@@ -472,8 +489,19 @@ class DayScreen(Screen):
         self.f_xfixed.input.text = _num(e.extra_fixed) if e.extra_fixed else ""
         self.txt_xworks.text = e.extra_works
         self.f_bonus.input.text = _num(e.bonus) if e.bonus else ""
+        self.t_penalty.set(e.penalty_on)
+        self.f_penalty.input.text = _num(e.penalty) if e.penalty else ""
         self._loading = False
+        self._set_locked(bool(e.approved_at) or self.app.db.week_received(d))
         self.recalc()
+
+    def _set_locked(self, locked):
+        controls = (self.f_start.input, self.f_end.input, self.f_lunch.input,
+                    self.txt_works, self.f_xstart.input, self.f_xend.input,
+                    self.f_xrate.input, self.f_xfixed.input, self.txt_xworks,
+                    self.f_bonus.input, self.f_penalty.input)
+        for w in controls: w.disabled = locked
+        for w in (self.t_lunch, self.t_extra, self.t_xfixed, self.t_penalty): w.disabled = locked
 
     def shift(self, n):
         self.load(self.app.current + dt.timedelta(days=n))
@@ -488,10 +516,18 @@ class DayScreen(Screen):
         if e.start is not None and e.end is None:
             toast("Укажите время окончания работы", "warn")
             return
+        saved = self.app.db.load_day(self.app.current)
+        if saved.approved_at or self.app.db.week_received(self.app.current):
+            toast("Эта запись уже закрыта", "warn")
+            return
         self.app.db.save_day(e)
         toast("Сохранено: %s" % fmt_money(e.total_pay))
 
     def clear(self):
+        saved = self.app.db.load_day(self.app.current)
+        if saved.approved_at or self.app.db.week_received(self.app.current):
+            toast("Эта запись уже закрыта", "warn")
+            return
         self.app.db.delete_day(self.app.current)
         self.load(self.app.current)
         toast("Запись удалена", "warn")
@@ -555,6 +591,9 @@ class WeekScreen(Screen):
                                    height=dp(24)))
             card.add_widget(head)
             if not e.is_empty:
+                status = "✓ Одобрено" if e.approved_at else "Ожидает одобрения"
+                status_color = C["ok"] if e.approved_at else C["warn"]
+                card.add_widget(TLabel(status, size=13, font=FONTB, color=status_color, height=dp(22)))
                 s = "%s — %s" % (fmt_time(e.start), fmt_time(e.end)) \
                     if e.start is not None and e.end is not None else ""
                 if e.lunch_on and e.lunch_min:
@@ -566,12 +605,14 @@ class WeekScreen(Screen):
                         "доп.: %s  •  %s" % (fmt_hm_short(e.extra_min),
                                              fmt_money(e.extra_pay)),
                         size=13, color=C["warn"]))
+                if e.penalty:
+                    card.add_widget(TLabel("штраф: -%s" % fmt_money(e.penalty), size=13, color=C["danger"]))
                 if e.bonus:
                     card.add_widget(TLabel("премия: %s" % fmt_money(e.bonus),
                                            size=13, color=C["accent_dark"]))
                 if e.works:
                     card.add_widget(TLabel(e.works, size=13))
-            btn = FlatButton("открыть", bg=C["surface_alt"], fg=C["accent_dark"],
+            btn = FlatButton("просмотр" if e.approved_at else "открыть", bg=C["surface_alt"], fg=C["accent_dark"],
                              height=34, size=12, font=FONT,
                              on_release=lambda _b, x=dd: self.app.open_day(x))
             card.add_widget(btn)
@@ -585,13 +626,57 @@ class WeekScreen(Screen):
         tot.add_widget(Row("Оплата за дни", fmt_money(t.day_pay)))
         tot.add_widget(Row("Доп. работы", fmt_money(t.extra_pay)))
         tot.add_widget(Row("Премия", fmt_money(t.bonus)))
+        tot.add_widget(Row("Штрафы", "-" + fmt_money(t.penalty) if t.penalty else fmt_money(0)))
         r = Row("К ВЫПЛАТЕ", fmt_money(t.total_pay), bold=True, size=20, color=C["ok"])
         r.height = dp(36)
         tot.add_widget(r)
         self.body.add_widget(tot)
         self.body.add_widget(FlatButton("Поделиться отчётом за неделю",
                                         on_release=lambda *_: self.app.share_week()))
+        self.payment_box = Card("Сумма получена", bg=C["surface_alt"], radius=10)
+        self.payment_status = TLabel("", size=13, color=C["text_muted"])
+        self.payment_box.add_widget(self.payment_status)
+        self.f_received = field("Дата получения", "дд.мм.гггг")
+        self.f_received.input.bind(text=lambda *_: self._received_date_changed())
+        self.payment_box.add_widget(self.f_received)
+        self.received_toggle = Toggle("Получил", self._received_toggle)
+        self.payment_box.add_widget(self.received_toggle)
+        complete = self.app.db.week_complete(d)
+        closed = self.app.db.week_received(d)
+        self.payment_status.text = ("✓ Неделя закрыта окончательно" if closed else
+                                    "Все заполненные дни одобрены" if complete else
+                                    "Дата станет доступна после одобрения всех заполненных дней")
+        received_on = self.app.db.received_on(d) if complete else ""
+        self.f_received.input.text = received_on
+        self.f_received.disabled = not complete or closed
+        self.received_toggle.disabled = not complete or closed or not received_on.strip()
+        self.received_toggle.set(closed)
+        self.body.add_widget(self.payment_box)
         self.body.add_widget(TLabel("", height=dp(8)))
+
+    def _received_date_changed(self):
+        if hasattr(self, "received_toggle"):
+            closed = self.app.db.week_received(self.app.current)
+            self.received_toggle.disabled = (not self.app.db.week_complete(self.app.current)
+                                             or closed or not self.f_received.input.text.strip())
+
+    def _received_toggle(self, active):
+        if not active:
+            return
+        if not self.app.db.week_complete(self.app.current):
+            self.received_toggle.set(False)
+            toast("Сначала начальник должен одобрить все заполненные дни", "warn")
+            return
+        raw = self.f_received.input.text.strip()
+        try:
+            got = dt.datetime.strptime(raw, "%d.%m.%Y").date()
+        except ValueError:
+            self.received_toggle.set(False)
+            toast("Введите дату в формате ДД.ММ.ГГГГ", "warn")
+            return
+        self.app.db.set_received(self.app.current, got.isoformat())
+        self.refresh()
+        toast("Неделя окончательно закрыта", "ok")
 
 
 # --------------------------------------------------------------- экран ИСТОРИЯ
@@ -716,8 +801,12 @@ class SettingsScreen(Screen):
 
         c3 = Card("Данные для отчётов")
         self.f_emp = field("Ф. И. О. работника", "")
+        self.f_emp_key = field("Секретный ключ сотрудника", "")
+        self.f_emp_id = field("employee_id (заполняется синхронизацией)", "")
         self.f_org = field("Организация / участок", "")
         c3.add_widget(self.f_emp)
+        c3.add_widget(self.f_emp_key)
+        c3.add_widget(self.f_emp_id)
         c3.add_widget(self.f_org)
         body.add_widget(c3)
 
@@ -742,6 +831,8 @@ class SettingsScreen(Screen):
         self.f_de.input.text = db.get("default_end", "17:00")
         self.f_dl.input.text = db.get("default_lunch", "60")
         self.f_emp.input.text = db.get("employee", "")
+        self.f_emp_key.input.text = db.get("secret_key", "")
+        self.f_emp_id.input.text = db.get("employee_id", "")
         self.f_org.input.text = db.get("organization", "")
 
     def save(self):
@@ -752,6 +843,8 @@ class SettingsScreen(Screen):
         db.set("default_end", self.f_de.input.text or "17:00")
         db.set("default_lunch", self.f_dl.input.text or "60")
         db.set("employee", self.f_emp.input.text)
+        db.set("secret_key", self.f_emp_key.input.text)
+        db.set("employee_id", self.f_emp_id.input.text)
         db.set("organization", self.f_org.input.text)
         toast("Настройки сохранены")
 
@@ -953,7 +1046,8 @@ class TabelApp(App):
     def on_pause(self):
         try:
             e = self.s_day.collect()
-            if not e.is_empty:
+            saved = self.db.load_day(self.current)
+            if not e.is_empty and not saved.approved_at and not self.db.week_received(self.current):
                 self.db.save_day(e)
         except Exception:
             pass

@@ -1,0 +1,51 @@
+name: Android — test APK
+
+on:
+  push:
+    branches: [ android-backup-v1 ]
+    paths:
+      - 'android/**'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android-apk:
+    name: Android — ru.tabel.test.tabel
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git zip unzip openjdk-17-jdk python3-pip \
+            build-essential automake autoconf libtool pkg-config zlib1g-dev \
+            libncurses-dev libncursesw5-dev libtinfo6 cmake libffi-dev \
+            libssl-dev libltdl-dev python3-dev
+
+      - name: Install Buildozer
+        run: pip install -q buildozer cython==0.29.36 virtualenv
+
+      - name: Validate Android-only runtime modules
+        working-directory: android
+        run: python -m py_compile main.py timecard_core.py reports.py
+
+      - name: Build APK
+        working-directory: android
+        run: buildozer -v android debug
+
+      - name: Publish test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tabel-android-test-apk
+          path: android/bin/*.apk
+          if-no-files-found: error

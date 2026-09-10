@@ -8,7 +8,9 @@ source.dir = .
 source.include_exts = py,png,jpg,ttf,kv,json
 source.include_patterns = assets/*
 
-version = 1.1.0
+version = 1.1.1
+android.release_artifact = apk
+android.gradle_dependencies = 
 requirements = python3,kivy==2.1.0
 orientation = portrait
 fullscreen = 0

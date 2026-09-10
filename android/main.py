@@ -332,17 +332,20 @@ class DayScreen(Screen):
 
         # --- работы ---
         c3 = Card("Объём и качество произведённых работ")
-        self._works_text = ""  # внутреннее хранилище текста
-        # Preview-метка — показывает сохранённый текст
-        self.lbl_works = TLabel("что делал на работе…",
-                                size=15, color=C["text_muted"],
-                                height=dp(90))
-        self.lbl_works.size_hint_y = None
+        # Видимая область сохраняется. На Android любое нажатие по ней
+        # открывает настоящий android.widget.EditText.
+        self._works_text = ""
+        self.lbl_works = FlatButton("что делал на работе…", height=130,
+                                   bg=C["white"], fg=C["text"], size=15, font=FONT,
+                                   halign="left", valign="top", padding=(dp(12), dp(12)),
+                                   on_release=lambda *_: self._open_works_editor())
+        self.lbl_works.bind(size=lambda w, size: setattr(w, "text_size", (size[0]-dp(24), size[1]-dp(24))))
         c3.add_widget(self.lbl_works)
-        c3.add_widget(FlatButton("✎  Редактировать описание работ",
-                                 bg=C["surface_alt"], fg=C["accent_dark"],
-                                 height=40, size=14, font=FONT,
-                                 on_release=lambda *_: self._open_works_editor()))
+        self.btn_works = FlatButton("✎  Редактировать описание работ",
+                                    bg=C["surface_alt"], fg=C["accent_dark"],
+                                    height=42, size=14, font=FONT,
+                                    on_release=lambda *_: self._open_works_editor())
+        c3.add_widget(self.btn_works)
         body.add_widget(c3)
 
         # --- доп. работы ---
@@ -449,122 +452,113 @@ class DayScreen(Screen):
 
     # -- данные --
     def _open_works_editor(self, *_):
-        """Открыть редактор описания работ.
-
-        На Android используем нативный AlertDialog с EditText — получаем
-        полную клавиатуру с подсказками, буфером обмена и жестами.
-        На десктопе — простой Kivy Popup.
-        """
+        """Редактор описания: Android EditText с системным IME и буфером."""
+        if self._works_locked() or getattr(self, "_editor_busy", False):
+            return
+        self._editor_date = self.app.current
         import os
-        on_android = bool(os.environ.get("ANDROID_ARGUMENT"))
+        if not os.environ.get("ANDROID_ARGUMENT"):
+            content = BoxLayout(orientation="vertical", spacing=dp(8), padding=[dp(10)]*2)
+            inp = TextInput(text=self._works_text or "", hint_text="что делал на работе…",
+                            multiline=True, size_hint_y=None, height=dp(220),
+                            background_normal="", background_active="", background_color=C["white"],
+                            foreground_color=C["text"], font_name=FONT, font_size=sp(16),
+                            padding=[dp(8), dp(8)])
+            content.add_widget(inp)
+            popup = Popup(title="Описание работ", content=content, size_hint=(.95,None), height=dp(340))
+            row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
+            def save(*_):
+                self._accept_works_text(inp.text); popup.dismiss()
+            row.add_widget(FlatButton("Сохранить", height=44, on_release=save))
+            row.add_widget(FlatButton("Отмена", bg=C["surface_alt"], fg=C["text"], height=44,
+                                      on_release=lambda *_: popup.dismiss()))
+            content.add_widget(row); popup.open(); return
 
-        if on_android:
-            try:
-                from jnius import autoclass, cast
-                from android.runnable import run_on_ui_thread
-                PythonActivity = autoclass("org.kivy.android.PythonActivity")
-                AlertDialogBuilder = autoclass("android.app.AlertDialog$Builder")
-                EditText = autoclass("android.widget.EditText")
-                InputType = autoclass("android.text.InputType")
-                String = autoclass("java.lang.String")
+        self._editor_busy = True
+        try:
+            from jnius import autoclass, cast, PythonJavaClass, java_method
+            from android.runnable import run_on_ui_thread
+            Activity = autoclass("org.kivy.android.PythonActivity")
+            AlertBuilder = autoclass("android.app.AlertDialog$Builder")
+            EditText = autoclass("android.widget.EditText")
+            InputType = autoclass("android.text.InputType")
+            String = autoclass("java.lang.String")
+            activity = Activity.mActivity
+            current = self._works_text or ""
 
-                current_text = self._works_text or ""
+            class OkListener(PythonJavaClass):
+                __javainterfaces__ = ["android/content/DialogInterface$OnClickListener"]
+                def __init__(self, owner, edit):
+                    super().__init__(); self.owner=owner; self.edit=edit
+                @java_method("(Landroid/content/DialogInterface;I)V")
+                def onClick(self, dialog, which):
+                    result = str(cast("java.lang.CharSequence", self.edit.getText()).toString())
+                    from kivy.clock import Clock
+                    Clock.schedule_once(lambda *_: self.owner._accept_works_text(result), 0)
 
-                @run_on_ui_thread
-                def show():
-                    et = EditText(PythonActivity.mActivity)
-                    et.setText(String(current_text))
-                    # Многострочный текст + подсказки IME
-                    et.setInputType(
-                        InputType.TYPE_CLASS_TEXT
-                        | InputType.TYPE_TEXT_FLAG_MULTI_LINE
-                        | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
-                        | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-                    )
-                    et.setMinLines(4)
-                    et.setPadding(24, 16, 24, 16)
-                    # Поставить курсор в конец
-                    et.setSelection(et.length())
+            class DismissListener(PythonJavaClass):
+                __javainterfaces__ = ["android/content/DialogInterface$OnDismissListener"]
+                @java_method("(Landroid/content/DialogInterface;)V")
+                def onDismiss(listener, dialog):
+                    Clock.schedule_once(lambda *_: setattr(self, "_editor_busy", False), 0)
 
-                    from kivy.clock import Clock as KClock
+            @run_on_ui_thread
+            def show_editor():
+                try:
+                    edit=EditText(activity)
+                    edit.setText(cast("java.lang.CharSequence", String(current)))
+                    edit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE |
+                                      InputType.TYPE_TEXT_FLAG_AUTO_CORRECT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES)
+                    edit.setSingleLine(False)
+                    edit.setSelectAllOnFocus(False)
+                    edit.setMinLines(5)
+                    edit.setGravity(48)
+                    edit.setPadding(24,16,24,16)
+                    edit.requestFocus()
+                    edit.setSelection(edit.length())
+                    builder=AlertBuilder(activity)
+                    builder.setTitle(cast("java.lang.CharSequence", String("Объём и качество работ")))
+                    builder.setView(edit)
+                    self._native_ok = OkListener(self, edit)
+                    builder.setPositiveButton(cast("java.lang.CharSequence", String("Готово")), self._native_ok)
+                    builder.setNegativeButton(cast("java.lang.CharSequence", String("Отмена")), cast("android.content.DialogInterface$OnClickListener", None))
+                    dialog=builder.create()
+                    self._native_dialog = dialog
+                    self._native_dismiss = DismissListener()
+                    dialog.setOnDismissListener(self._native_dismiss)
+                    dialog.show()
+                    dialog.getWindow().setSoftInputMode(4 | 16)
+                    edit.requestFocus()
+                except Exception as ex:
+                    from kivy.clock import Clock
+                    Clock.schedule_once(lambda _, message=str(ex): self._editor_failed(message), 0)
+            show_editor()
+        except Exception as ex:
+            self._editor_failed(str(ex))
 
-                    def on_ok(dialog, which):
-                        result = et.getText().toString()
+    def _works_locked(self):
+        return bool(self.app.db.load_day(self.app.current).approved_at or
+                    self.app.db.week_received(self.app.current))
 
-                        def update(dt):
-                            self._works_text = result
-                            self.lbl_works.text = result if result.strip() else "что делал на работе…"
-                            self.lbl_works.color = C["text"] if result.strip() else C["text_muted"]
-
-                        KClock.schedule_once(update, 0)
-
-                    def on_cancel(dialog, which):
-                        pass
-
-                    from jnius import PythonJavaClass, java_method
-
-                    class OkListener(PythonJavaClass):
-                        __javainterfaces__ = ["android/content/DialogInterface$OnClickListener"]
-
-                        @java_method("(Landroid/content/DialogInterface;I)V")
-                        def onClick(self, dialog, which):
-                            on_ok(dialog, which)
-
-                    class CancelListener(PythonJavaClass):
-                        __javainterfaces__ = ["android/content/DialogInterface$OnClickListener"]
-
-                        @java_method("(Landroid/content/DialogInterface;I)V")
-                        def onClick(self, dialog, which):
-                            on_cancel(dialog, which)
-
-                    builder = AlertDialogBuilder(PythonActivity.mActivity)
-                    builder.setTitle(String("Объём и качество работ"))
-                    builder.setView(et)
-                    builder.setPositiveButton(String("Сохранить"), OkListener())
-                    builder.setNegativeButton(String("Отмена"), CancelListener())
-                    builder.show()
-
-                show()
-                return
-            except Exception as ex:
-                toast("Нативный редактор недоступен: %s" % ex, "warn")
-                # fallback ниже
-
-        # ── Kivy Popup (десктоп / fallback) ──────────────────────────────
-        from kivy.uix.popup import Popup
-
-        content = BoxLayout(orientation="vertical", spacing=dp(8),
-                            padding=[dp(10), dp(10)])
-        inp = TextInput(
-            text=self._works_text or "",
-            hint_text="что делал на работе…",
-            multiline=True,
-            size_hint_y=None, height=dp(220),
-            background_normal="", background_active="",
-            background_color=C["white"],
-            foreground_color=C["text"],
-            cursor_color=C["accent"],
-            font_name=FONT, font_size=sp(16),
-            padding=[dp(8), dp(8)],
-        )
-        content.add_widget(inp)
-
-        btn_row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
-
-        popup = Popup(title="Описание работ", content=content,
-                      size_hint=(0.95, None), height=dp(340))
-
-        def save(*_):
-            self._works_text = inp.text
-            self.lbl_works.text = inp.text if inp.text.strip() else "что делал на работе…"
-            self.lbl_works.color = C["text"] if inp.text.strip() else C["text_muted"]
-            popup.dismiss()
-
-        btn_row.add_widget(FlatButton("Сохранить", height=44, on_release=save))
-        btn_row.add_widget(FlatButton("Отмена", bg=C["surface_alt"], fg=C["text"],
-                                      height=44, on_release=lambda *_: popup.dismiss()))
-        content.add_widget(btn_row)
+    def _editor_failed(self, message):
+        self._editor_busy = False
+        from kivy.logger import Logger
+        Logger.error("WorksEditor: " + message)
+        popup = Popup(title="Ошибка редактора", size_hint=(.95, .5),
+                      content=TLabel("Не удалось открыть редактор. " + message))
         popup.open()
+
+    def _accept_works_text(self, value):
+        if self.app.current != self._editor_date or self._works_locked():
+            toast("Дата или статус записи изменились", "warn")
+            return
+        self._set_works_text(value)
+
+    def _set_works_text(self, value):
+        self._works_text = value or ""
+        self.lbl_works.text = self._works_text if self._works_text.strip() else "что делал на работе…"
+        self.lbl_works.color = C["text"] if self._works_text.strip() else C["text_muted"]
+        self.recalc()
 
     def collect(self):
         e = DayEntry(date=self.app.current.isoformat())
@@ -634,6 +628,8 @@ class DayScreen(Screen):
                     self.f_xstart.input, self.f_xend.input,
                     self.f_xrate.input, self.f_xfixed.input, self.txt_xworks,
                     self.f_bonus.input, self.f_penalty.input)
+        self.lbl_works.disabled = locked
+        self.btn_works.disabled = locked
         for w in controls: w.disabled = locked
         for w in (self.t_lunch, self.t_extra, self.t_xfixed, self.t_penalty): w.disabled = locked
         if hasattr(self, "penalty_box"):

@@ -330,25 +330,21 @@ class DayScreen(Screen):
         c1.add_widget(self.lunch_box)
         body.add_widget(c1)
 
-        # --- расчёт ---
-        c2 = Card("Расчёт за день", bg=C["accent_light"])
-        self.r_hours = Row("Отработано (основное)", "0 ч 00 мин", bold=True,
-                           color=C["accent_dark"])
-        self.r_xhours = Row("Дополнительно", "0 ч 00 мин", color=C["accent_dark"])
-        self.r_pay = Row("Оплата за день", "0 ₽")
-        self.r_xpay = Row("Доп. работы", "0 ₽")
-        self.r_bonus = Row("Премия", "0 ₽")
-        self.r_penalty = Row("Штраф", "0 ₽")
-        for r in (self.r_hours, self.r_xhours, self.r_pay, self.r_xpay, self.r_bonus, self.r_penalty):
-            c2.add_widget(r)
-        self.r_total = Row("ИТОГО ЗА ДЕНЬ", "0 ₽", bold=True, size=19, color=C["ok"])
-        self.r_total.height = dp(34)
-        c2.add_widget(self.r_total)
-        body.add_widget(c2)
-
         # --- работы ---
         c3 = Card("Объём и качество произведённых работ")
-        self.txt_works = TInput(hint="что делал на работе…", height=110, multiline=True)
+        self.txt_works = TextInput(
+            hint_text="что делал на работе…",
+            multiline=True,
+            size_hint_y=None, height=dp(130),
+            background_normal="", background_active="",
+            background_color=C["white"],
+            foreground_color=C["text"],
+            cursor_color=C["accent"],
+            hint_text_color=C["text_muted"],
+            font_name=FONT, font_size=sp(17),
+            padding=[dp(10), dp(10)],
+            use_handles=True,
+        )
         c3.add_widget(self.txt_works)
         body.add_widget(c3)
 
@@ -382,11 +378,29 @@ class DayScreen(Screen):
 
         # --- штраф (вводит работник, вычитается из итога) ---
         c6 = Card("Штраф")
-        self.t_penalty = Toggle("Был штраф", lambda *_: self.recalc())
+        self.t_penalty = Toggle("Был штраф", self._penalty)
         c6.add_widget(self.t_penalty)
+        self.penalty_box = Card(bg=C["surface_alt"], radius=10, padding=[dp(10)] * 4)
         self.f_penalty = field("Сумма штрафа, ₽", "0", True, self.recalc)
-        c6.add_widget(self.f_penalty)
+        self.penalty_box.add_widget(self.f_penalty)
+        c6.add_widget(self.penalty_box)
         body.add_widget(c6)
+
+        # --- расчёт ---
+        c2 = Card("Расчёт за день", bg=C["accent_light"])
+        self.r_hours = Row("Отработано (основное)", "0 ч 00 мин", bold=True,
+                           color=C["accent_dark"])
+        self.r_xhours = Row("Дополнительно", "0 ч 00 мин", color=C["accent_dark"])
+        self.r_pay = Row("Оплата за день", "0 ₽")
+        self.r_xpay = Row("Доп. работы", "0 ₽")
+        self.r_bonus = Row("Премия", "0 ₽")
+        self.r_penalty = Row("Штраф", "0 ₽")
+        for r in (self.r_hours, self.r_xhours, self.r_pay, self.r_xpay, self.r_bonus, self.r_penalty):
+            c2.add_widget(r)
+        self.r_total = Row("ИТОГО ЗА ДЕНЬ", "0 ₽", bold=True, size=19, color=C["ok"])
+        self.r_total.height = dp(34)
+        c2.add_widget(self.r_total)
+        body.add_widget(c2)
 
         # --- кнопки ---
         body.add_widget(FlatButton("СОХРАНИТЬ ДЕНЬ", height=56, size=17,
@@ -404,6 +418,7 @@ class DayScreen(Screen):
         self.body = body
         self._panels_visible = {"lunch": True, "extra": True}
         Clock.schedule_once(lambda *_: self._hide_panels(), 0)
+        Clock.schedule_once(lambda *_: self.penalty_box.collapse(False), 0)
 
     # -- показ/скрытие панелей --
     def _hide_panels(self):
@@ -423,6 +438,10 @@ class DayScreen(Screen):
 
     def _set_lunch(self, v):
         self.f_lunch.input.text = v
+        self.recalc()
+
+    def _penalty(self, active):
+        self.penalty_box.collapse(active)
         self.recalc()
 
     def _extra(self, active):
@@ -449,8 +468,6 @@ class DayScreen(Screen):
         e.bonus = _f(self.f_bonus.input.text, 0)
         e.penalty_on = self.t_penalty.get()
         e.penalty = _f(self.f_penalty.input.text, 0) if e.penalty_on else 0
-        e.penalty_on = self.t_penalty.get()
-        e.penalty = _f(self.f_penalty.input.text, 0) if e.penalty_on else 0
         e.rate = self.app.db.get_float("rate", 250)
         return e
 
@@ -463,7 +480,6 @@ class DayScreen(Screen):
         self.r_pay.value.text = fmt_money(e.day_pay)
         self.r_xpay.value.text = fmt_money(e.extra_pay)
         self.r_bonus.value.text = fmt_money(e.bonus)
-        self.r_penalty.value.text = "-" + fmt_money(e.penalty) if e.penalty else fmt_money(0)
         self.r_penalty.value.text = "-" + fmt_money(e.penalty) if e.penalty else fmt_money(0)
         self.r_total.value.text = fmt_money(e.total_pay)
 
@@ -490,6 +506,7 @@ class DayScreen(Screen):
         self.txt_xworks.text = e.extra_works
         self.f_bonus.input.text = _num(e.bonus) if e.bonus else ""
         self.t_penalty.set(e.penalty_on)
+        self.penalty_box.collapse(e.penalty_on)
         self.f_penalty.input.text = _num(e.penalty) if e.penalty else ""
         self._loading = False
         self._set_locked(bool(e.approved_at) or self.app.db.week_received(d))
@@ -502,6 +519,8 @@ class DayScreen(Screen):
                     self.f_bonus.input, self.f_penalty.input)
         for w in controls: w.disabled = locked
         for w in (self.t_lunch, self.t_extra, self.t_xfixed, self.t_penalty): w.disabled = locked
+        if hasattr(self, "penalty_box"):
+            self.penalty_box.disabled = locked
 
     def shift(self, n):
         self.load(self.app.current + dt.timedelta(days=n))

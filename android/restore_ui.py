@@ -92,9 +92,9 @@ class RestoreController:
             self._finish()
             return
 
-        # Resolve application classes on the Kivy thread, BEFORE starting a
-        # Python worker. JNI FindClass on a newly attached thread may use the
-        # system class loader, which cannot see classes bundled in the APK.
+        # Resolve application classes on the Kivy thread before starting a
+        # worker. On Android, JNI class lookup from a newly attached worker
+        # thread may not see classes bundled in the APK.
         try:
             from jnius import autoclass
             act = autoclass('org.kivy.android.PythonActivity').mActivity

@@ -92,11 +92,19 @@ class RestoreController:
             self._finish()
             return
 
+        # Resolve application classes on the Kivy thread, BEFORE starting a
+        # Python worker. JNI FindClass on a newly attached thread may use the
+        # system class loader, which cannot see classes bundled in the APK.
+        try:
+            from jnius import autoclass
+            act = autoclass('org.kivy.android.PythonActivity').mActivity
+            reader = autoclass('org.tabel.bridge.DocumentReader')
+        except Exception as ex:
+            self._error(str(ex))
+            return
+
         def read():
             try:
-                from jnius import autoclass
-                act = autoclass('org.kivy.android.PythonActivity').mActivity
-                reader = autoclass('org.tabel.bridge.DocumentReader')
                 text = str(reader.read(act, uri, MAX_BYTES))
                 data = parse_backup(text.lstrip('\ufeff'))
                 Clock.schedule_once(lambda _dt: self._preview(data), 0)

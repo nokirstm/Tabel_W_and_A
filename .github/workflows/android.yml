@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   android-apk:
-    name: Android — ru.tabel.test.tabel
+    name: Android — ru.tabel.editorqa.tabel
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -37,7 +37,12 @@ jobs:
 
       - name: Validate Android-only runtime modules
         working-directory: android
-        run: python -m py_compile main.py timecard_core.py reports.py
+        run: |
+          python -m compileall -q .
+          python -m unittest discover -s tests -p 'test_restore.py' -v
+          test -f java/org/tabel/bridge/WorksEditor.java
+          test -f java/org/tabel/bridge/DocumentReader.java
+          echo "Source commit: $GITHUB_SHA"
 
       - name: Build APK
         working-directory: android
@@ -46,6 +51,6 @@ jobs:
       - name: Publish test APK
         uses: actions/upload-artifact@v4
         with:
-          name: Tabel-android-test-apk
+          name: Tabel-1.1.2-editor-restore-${{ github.sha }}
           path: android/bin/*.apk
           if-no-files-found: error

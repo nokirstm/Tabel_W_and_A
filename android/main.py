@@ -283,6 +283,10 @@ class DayScreen(Screen):
         super().__init__(name="day", **kw)
         self.app = app
         self._loading = False
+        self._editor_busy = False
+        self._editor_target = "works"
+        self._editor_date = None
+        self._native_editor = None
         root = BoxLayout(orientation="vertical")
         self.add_widget(root)
 
@@ -354,6 +358,10 @@ class DayScreen(Screen):
         # Видимая область сохраняется. На Android любое нажатие по ней
         # открывает настоящий android.widget.EditText.
         self._works_text = ""
+        self._extra_works_text = ""
+        self._editor_target = None
+        self._native_editor = None
+        self._editor_busy = False
         self.lbl_works = FlatButton("что делал на работе…", height=130,
                                    bg=C["white"], fg=C["text"], size=15, font=FONT,
                                    halign="left", valign="top", padding=(dp(12), dp(12)),
@@ -367,7 +375,7 @@ class DayScreen(Screen):
         c3.add_widget(self.btn_works)
         body.add_widget(c3)
 
-        # --- доп. работы ---
+        # --- дополнительные работы ---
         c4 = Card("Дополнительные работы")
         self.t_extra = Toggle("Были дополнительные работы", self._extra)
         c4.add_widget(self.t_extra)
@@ -384,11 +392,24 @@ class DayScreen(Screen):
         self.extra_box.add_widget(self.t_xfixed)
         self.f_xfixed = field("Сумма за доп. работы, ₽", "0", True, self.recalc)
         self.extra_box.add_widget(self.f_xfixed)
-        self.txt_xworks = TInput(hint="описание доп. работ", height=70, multiline=True)
-        self.extra_box.add_widget(self.txt_xworks)
+
+        # Описание дополнительных работ редактируется тем же нативным
+        # Android EditText, что и описание обычных работ.
+        self.lbl_xworks = FlatButton("описание доп. работ…", height=100,
+                                     bg=C["white"], fg=C["text_muted"], size=15,
+                                     font=FONT, halign="left", valign="top",
+                                     padding=(dp(12), dp(12)),
+                                     on_release=lambda *_: self._open_extra_works_editor())
+        self.lbl_xworks.bind(size=lambda w, size: setattr(
+            w, "text_size", (size[0] - dp(24), size[1] - dp(24))))
+        self.extra_box.add_widget(self.lbl_xworks)
+        self.btn_xworks = FlatButton("✎  Редактировать описание доп. работ",
+                                     bg=C["surface_alt"], fg=C["accent_dark"],
+                                     height=42, size=14, font=FONT,
+                                     on_release=lambda *_: self._open_extra_works_editor())
+        self.extra_box.add_widget(self.btn_xworks)
         c4.add_widget(self.extra_box)
         body.add_widget(c4)
-
         # --- премия ---
         c5 = Card("Премия")
         self.f_bonus = field("Разовая сумма за день, ₽", "0", True, self.recalc)
@@ -470,50 +491,71 @@ class DayScreen(Screen):
         self.recalc()
 
     # -- данные --
-    def _open_works_editor(self, *_):
-        """Редактор описания: Android EditText с системным IME и буфером."""
+    def _open_extra_works_editor(self, *_):
+        return self._open_works_editor("extra")
+
+    def _open_works_editor(self, target="works", *_):
+        """Open the shared native Android editor for either work description."""
+        if target not in ("works", "extra"):
+            target = "works"
         try:
             if self._works_locked() or getattr(self, "_editor_busy", False):
                 return
         except Exception as ex:
             self._editor_failed(str(ex))
             return
-        # Release any SDL/Kivy keyboard before opening the Android window.
+
+        self._editor_target = target
+        self._editor_date = self.app.current
+        current = (self._works_text if target == "works"
+                   else self._extra_works_text) or ""
+        title = ("Описание произведённых работ" if target == "works"
+                 else "Описание дополнительных работ")
+
+        # Release any Kivy text field focus before opening the Android window.
         for widget in self.walk():
             if isinstance(widget, TextInput):
                 widget.focus = False
-        self._editor_date = self.app.current
-        import os
+
         if not os.environ.get("ANDROID_ARGUMENT"):
-            content = BoxLayout(orientation="vertical", spacing=dp(8), padding=[dp(10)]*2)
-            inp = TextInput(text=self._works_text or "", hint_text="что делал на работе…",
-                            multiline=True, size_hint_y=None, height=dp(220),
-                            background_normal="", background_active="", background_color=C["white"],
-                            foreground_color=C["text"], font_name=FONT, font_size=sp(16),
-                            padding=[dp(8), dp(8)])
+            content = BoxLayout(orientation="vertical", spacing=dp(8),
+                                padding=[dp(10)] * 2)
+            inp = TextInput(text=current, hint_text=title, multiline=True,
+                            size_hint_y=None, height=dp(220),
+                            background_normal="", background_active="",
+                            background_color=C["white"], foreground_color=C["text"],
+                            font_name=FONT, font_size=sp(16), padding=[dp(8), dp(8)])
             content.add_widget(inp)
-            popup = Popup(title="Описание работ", content=content, size_hint=(.95,None), height=dp(340))
+            popup = Popup(title=title, content=content, size_hint=(.95, None),
+                          height=dp(340))
             row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
+
             def save(*_):
-                self._accept_works_text(inp.text); popup.dismiss()
+                self._accept_works_text(inp.text, target)
+                popup.dismiss()
+
             row.add_widget(FlatButton("Сохранить", height=44, on_release=save))
-            row.add_widget(FlatButton("Отмена", bg=C["surface_alt"], fg=C["text"], height=44,
+            row.add_widget(FlatButton("Отмена", bg=C["surface_alt"],
+                                      fg=C["text"], height=44,
                                       on_release=lambda *_: popup.dismiss()))
-            content.add_widget(row); popup.open(); return
+            content.add_widget(row)
+            popup.open()
+            return
 
         self._editor_busy = True
         try:
             from native_editor import NativeEditor
-            if not hasattr(self, '_native_editor'):
+            if self._native_editor is None:
                 self._native_editor = NativeEditor()
+
             def completed(status, value):
                 self._editor_busy = False
-                if status == 'ok':
-                    self._accept_works_text(value)
-                elif status == 'error':
+                if status == "ok":
+                    self._accept_works_text(value, target)
+                elif status == "error":
                     self._editor_failed(value)
-            if not self._native_editor.open('Описание произведённых работ',
-                                             self._works_text or '', completed):
+
+            if not self._native_editor.open(title, current, completed):
                 self._editor_busy = False
         except Exception as ex:
             self._editor_failed(str(ex))
@@ -530,16 +572,33 @@ class DayScreen(Screen):
                       content=TLabel("Не удалось открыть редактор. " + message))
         popup.open()
 
-    def _accept_works_text(self, value):
+    def _accept_works_text(self, value, target=None):
+        target = target or self._editor_target or "works"
+        if target not in ("works", "extra"):
+            target = "works"
         if self.app.current != self._editor_date or self._works_locked():
             toast("Дата или статус записи изменились", "warn")
             return
-        self._set_works_text(value)
+        if target == "extra":
+            self._set_extra_works_text(value)
+        else:
+            self._set_works_text(value)
 
     def _set_works_text(self, value):
         self._works_text = value or ""
-        self.lbl_works.text = self._works_text if self._works_text.strip() else "что делал на работе…"
-        self.lbl_works.color = C["text"] if self._works_text.strip() else C["text_muted"]
+        self.lbl_works.text = (self._works_text if self._works_text.strip()
+                               else "что делал на работе…")
+        self.lbl_works.color = (C["text"] if self._works_text.strip()
+                                else C["text_muted"])
+        self.recalc()
+
+    def _set_extra_works_text(self, value):
+        self._extra_works_text = value or ""
+        self.lbl_xworks.text = (self._extra_works_text
+                                if self._extra_works_text.strip()
+                                else "описание доп. работ…")
+        self.lbl_xworks.color = (C["text"] if self._extra_works_text.strip()
+                                 else C["text_muted"])
         self.recalc()
 
     def collect(self):
@@ -555,7 +614,7 @@ class DayScreen(Screen):
         e.extra_on = self.t_extra.get()
         e.extra_start = parse_time(self.f_xstart.input.text)
         e.extra_end = parse_time(self.f_xend.input.text)
-        e.extra_works = self.txt_xworks.text.strip()
+        e.extra_works = (self._extra_works_text or "").strip()
         e.extra_use_fixed = self.t_xfixed.get()
         e.extra_rate = _f(self.f_xrate.input.text, self.app.db.get_float("extra_rate", 250))
         e.extra_fixed = _f(self.f_xfixed.input.text, 0)
@@ -600,7 +659,7 @@ class DayScreen(Screen):
         self.f_xrate.input.text = _num(e.extra_rate)
         self.t_xfixed.set(e.extra_use_fixed)
         self.f_xfixed.input.text = _num(e.extra_fixed) if e.extra_fixed else ""
-        self.txt_xworks.text = e.extra_works
+        self._set_extra_works_text(e.extra_works)
         self.f_bonus.input.text = _num(e.bonus) if e.bonus else ""
         self.t_penalty.set(e.penalty_on)
         self.penalty_box.collapse(e.penalty_on)
@@ -612,10 +671,12 @@ class DayScreen(Screen):
     def _set_locked(self, locked):
         controls = (self.f_start.input, self.f_end.input, self.f_lunch.input,
                     self.f_xstart.input, self.f_xend.input,
-                    self.f_xrate.input, self.f_xfixed.input, self.txt_xworks,
+                    self.f_xrate.input, self.f_xfixed.input,
                     self.f_bonus.input, self.f_penalty.input)
         self.lbl_works.disabled = locked
         self.btn_works.disabled = locked
+        self.lbl_xworks.disabled = locked
+        self.btn_xworks.disabled = locked
         for w in controls: w.disabled = locked
         for w in (self.t_lunch, self.t_extra, self.t_xfixed, self.t_penalty): w.disabled = locked
         if hasattr(self, "penalty_box"):
@@ -941,7 +1002,7 @@ class SettingsScreen(Screen):
                                      on_release=lambda *_: self.app.restore_controller.open())
         c4.add_widget(self.btn_restore)
         body.add_widget(c4)
-        body.add_widget(TLabel("Табель  •  учёт рабочего времени и выплат\nверсия 1.1.2",
+body.add_widget(TLabel("Табель  •  учёт рабочего времени и выплат\nверсия 1.1.3",
                                size=12, color=C["text_muted"], halign="center"))
         body.add_widget(TLabel("Проверочная сборка 1.1.2 • editor-restore-1", size=12,
                                color=C["accent_dark"], halign="center"))

@@ -67,6 +67,27 @@ d.save(); d.load(dt.date(2026, 9, 8)); d.load(dt.date(2026, 9, 7))
 assert d._works_text == 'Монтаж\nПроверка 🙂'
 print('PASS text save/load with Unicode and newlines')
 
+# Additional-work description uses the same native editor and remains separate.
+d.load(dt.date(2026, 9, 10)); frames()
+d.t_extra.set(True); d._toggle_panel('extra', True)
+for widget in (d.lbl_xworks, d.btn_xworks):
+    widget.dispatch('on_release')
+    assert d._editor_busy and d._editor_target == 'extra'
+    assert d._native_editor.calls[-1][0] == 'Описание дополнительных работ'
+    d._native_editor.callback('cancel', '')
+    assert not d._editor_busy
+d.btn_xworks.dispatch('on_release')
+d._native_editor.callback('ok', 'Установка кабеля\nПроверка')
+assert d._extra_works_text == 'Установка кабеля\nПроверка'
+assert d._works_text == ''
+d.f_start.input.text = '8:00'; d.f_end.input.text = '17:00'
+d.f_xstart.input.text = '10:00'; d.f_xend.input.text = '12:00'
+d.save(); d.load(dt.date(2026, 9, 11)); d.load(dt.date(2026, 9, 10))
+assert d._extra_works_text == 'Установка кабеля\nПроверка'
+assert d.collect().extra_works == 'Установка кабеля\nПроверка'
+print('PASS additional-work native editor and save/load')
+
+
 d.btn_works.dispatch('on_release')
 d.load(dt.date(2026, 9, 8))
 d._native_editor.callback('ok', 'WRONG DATE')

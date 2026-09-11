@@ -158,5 +158,10 @@ class Storage:
     def set_received(self,anchor,date):
         key = self._week_key(anchor); self.set('received_week_' + key, '1'); self.set('received_on_' + key, date)
     def export_json(self,path):
-        data={'settings':{r['key']:r['value'] for r in self.conn.execute('SELECT key,value FROM settings')},'days':[DayEntry.from_row(r).to_dict() for r in self.conn.execute('SELECT * FROM days ORDER BY date')]}; open(path,'w',encoding='utf-8').write(json.dumps(data,ensure_ascii=False,indent=2))
+        data = {'format_version': 1,
+                'settings': {r['key']: r['value'] for r in self.conn.execute('SELECT key,value FROM settings')},
+                'days': [DayEntry.from_row(r).to_dict() for r in self.conn.execute('SELECT * FROM days ORDER BY date')]}
+        with open(path, 'w', encoding='utf-8') as output:
+            json.dump(data, output, ensure_ascii=False, indent=2)
+        return path
     def close(self): self.conn.close()

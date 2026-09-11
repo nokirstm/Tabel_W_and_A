@@ -1,14 +1,16 @@
 [app]
 
-title = Тabelь — тест Android
+title = Табель — проверка ввода
 package.name = tabel
-package.domain = ru.tabel.test
+package.domain = ru.tabel.editorqa
 
 source.dir = .
-source.include_exts = py,png,jpg,ttf,kv,json
+source.include_exts = py,png,jpg,ttf,kv,json,java
 source.include_patterns = assets/*
+source.exclude_dirs = tests
+android.add_src = java
 
-version = 1.1.1
+version = 1.1.2
 requirements = python3,kivy==2.1.0
 orientation = portrait
 fullscreen = 0

@@ -9,9 +9,10 @@ import sys
 import datetime as dt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-for p in (HERE, os.path.join(HERE, "core"), os.path.join(HERE, "..", "core")):
-    if os.path.isdir(p) and p not in sys.path:
-        sys.path.insert(0, p)
+# Always use Android's own model, including when testing from the repository root.
+if HERE in sys.path:
+    sys.path.remove(HERE)
+sys.path.insert(0, HERE)
 
 from kivy.config import Config
 if not os.environ.get("ANDROID_ARGUMENT"):
@@ -72,6 +73,7 @@ class Card(BoxLayout):
         kw.setdefault("spacing", dp(8))
         kw.setdefault("size_hint_y", None)
         super().__init__(**kw)
+        self._collapsed = False
         self._bg = bg or C["surface"]
         with self.canvas.before:
             self._c = Color(*self._bg)
@@ -85,6 +87,7 @@ class Card(BoxLayout):
 
     def collapse(self, show):
         """Свернуть/развернуть панель (для полей под галочкой)."""
+        self._collapsed = not show
         if show:
             self.opacity = 1
             self.disabled = False
@@ -95,6 +98,22 @@ class Card(BoxLayout):
             self.opacity = 0
             self.disabled = True
             self.height = 0
+
+    def on_touch_down(self, touch):
+        # height=0/opacity=0 do NOT remove children from Kivy hit testing.
+        if self._collapsed:
+            return False
+        return super().on_touch_down(touch)
+
+    def on_touch_move(self, touch):
+        if self._collapsed:
+            return False
+        return super().on_touch_move(touch)
+
+    def on_touch_up(self, touch):
+        if self._collapsed:
+            return False
+        return super().on_touch_up(touch)
 
     def _sync(self, *_):
         self._r.pos = self.pos
@@ -417,8 +436,8 @@ class DayScreen(Screen):
 
         self.body = body
         self._panels_visible = {"lunch": True, "extra": True}
-        Clock.schedule_once(lambda *_: self._hide_panels(), 0)
-        Clock.schedule_once(lambda *_: self.penalty_box.collapse(False), 0)
+        self._hide_panels()
+        self.penalty_box.collapse(False)
 
     # -- показ/скрытие панелей --
     def _hide_panels(self):
@@ -453,8 +472,16 @@ class DayScreen(Screen):
     # -- данные --
     def _open_works_editor(self, *_):
         """Редактор описания: Android EditText с системным IME и буфером."""
-        if self._works_locked() or getattr(self, "_editor_busy", False):
+        try:
+            if self._works_locked() or getattr(self, "_editor_busy", False):
+                return
+        except Exception as ex:
+            self._editor_failed(str(ex))
             return
+        # Release any SDL/Kivy keyboard before opening the Android window.
+        for widget in self.walk():
+            if isinstance(widget, TextInput):
+                widget.focus = False
         self._editor_date = self.app.current
         import os
         if not os.environ.get("ANDROID_ARGUMENT"):
@@ -476,63 +503,18 @@ class DayScreen(Screen):
 
         self._editor_busy = True
         try:
-            from jnius import autoclass, cast, PythonJavaClass, java_method
-            from android.runnable import run_on_ui_thread
-            Activity = autoclass("org.kivy.android.PythonActivity")
-            AlertBuilder = autoclass("android.app.AlertDialog$Builder")
-            EditText = autoclass("android.widget.EditText")
-            InputType = autoclass("android.text.InputType")
-            String = autoclass("java.lang.String")
-            activity = Activity.mActivity
-            current = self._works_text or ""
-
-            class OkListener(PythonJavaClass):
-                __javainterfaces__ = ["android/content/DialogInterface$OnClickListener"]
-                def __init__(self, owner, edit):
-                    super().__init__(); self.owner=owner; self.edit=edit
-                @java_method("(Landroid/content/DialogInterface;I)V")
-                def onClick(self, dialog, which):
-                    result = str(cast("java.lang.CharSequence", self.edit.getText()).toString())
-                    from kivy.clock import Clock
-                    Clock.schedule_once(lambda *_: self.owner._accept_works_text(result), 0)
-
-            class DismissListener(PythonJavaClass):
-                __javainterfaces__ = ["android/content/DialogInterface$OnDismissListener"]
-                @java_method("(Landroid/content/DialogInterface;)V")
-                def onDismiss(listener, dialog):
-                    Clock.schedule_once(lambda *_: setattr(self, "_editor_busy", False), 0)
-
-            @run_on_ui_thread
-            def show_editor():
-                try:
-                    edit=EditText(activity)
-                    edit.setText(cast("java.lang.CharSequence", String(current)))
-                    edit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE |
-                                      InputType.TYPE_TEXT_FLAG_AUTO_CORRECT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES)
-                    edit.setSingleLine(False)
-                    edit.setSelectAllOnFocus(False)
-                    edit.setMinLines(5)
-                    edit.setGravity(48)
-                    edit.setPadding(24,16,24,16)
-                    edit.requestFocus()
-                    edit.setSelection(edit.length())
-                    builder=AlertBuilder(activity)
-                    builder.setTitle(cast("java.lang.CharSequence", String("Объём и качество работ")))
-                    builder.setView(edit)
-                    self._native_ok = OkListener(self, edit)
-                    builder.setPositiveButton(cast("java.lang.CharSequence", String("Готово")), self._native_ok)
-                    builder.setNegativeButton(cast("java.lang.CharSequence", String("Отмена")), cast("android.content.DialogInterface$OnClickListener", None))
-                    dialog=builder.create()
-                    self._native_dialog = dialog
-                    self._native_dismiss = DismissListener()
-                    dialog.setOnDismissListener(self._native_dismiss)
-                    dialog.show()
-                    dialog.getWindow().setSoftInputMode(4 | 16)
-                    edit.requestFocus()
-                except Exception as ex:
-                    from kivy.clock import Clock
-                    Clock.schedule_once(lambda _, message=str(ex): self._editor_failed(message), 0)
-            show_editor()
+            from native_editor import NativeEditor
+            if not hasattr(self, '_native_editor'):
+                self._native_editor = NativeEditor()
+            def completed(status, value):
+                self._editor_busy = False
+                if status == 'ok':
+                    self._accept_works_text(value)
+                elif status == 'error':
+                    self._editor_failed(value)
+            if not self._native_editor.open('Описание произведённых работ',
+                                             self._works_text or '', completed):
+                self._editor_busy = False
         except Exception as ex:
             self._editor_failed(str(ex))
 
@@ -561,7 +543,10 @@ class DayScreen(Screen):
         self.recalc()
 
     def collect(self):
-        e = DayEntry(date=self.app.current.isoformat())
+        from dataclasses import replace
+        loaded = getattr(self, '_loaded_entry', None)
+        e = replace(loaded) if loaded and loaded.date == self.app.current.isoformat() else DayEntry(
+            date=self.app.current.isoformat(), rate=self.app.db.get_float('rate', 250))
         e.start = parse_time(self.f_start.input.text)
         e.end = parse_time(self.f_end.input.text)
         e.lunch_on = self.t_lunch.get()
@@ -577,7 +562,7 @@ class DayScreen(Screen):
         e.bonus = _f(self.f_bonus.input.text, 0)
         e.penalty_on = self.t_penalty.get()
         e.penalty = _f(self.f_penalty.input.text, 0) if e.penalty_on else 0
-        e.rate = self.app.db.get_float("rate", 250)
+        # Editing the description must not recalculate old days at today's rate.
         return e
 
     def recalc(self, *_):
@@ -596,6 +581,7 @@ class DayScreen(Screen):
         self._loading = True
         self.app.current = d
         e = self.app.db.load_day(d)
+        self._loaded_entry = e
         self.l_wd.text = WEEKDAYS_RU[d.weekday()]
         self.l_dt.text = "%02d.%02d.%d   •   %s" % (d.day, d.month, d.year,
                                                     week_title(d))
@@ -633,7 +619,7 @@ class DayScreen(Screen):
         for w in controls: w.disabled = locked
         for w in (self.t_lunch, self.t_extra, self.t_xfixed, self.t_penalty): w.disabled = locked
         if hasattr(self, "penalty_box"):
-            self.penalty_box.disabled = locked
+            self.penalty_box.disabled = locked or not self.t_penalty.get()
 
     def shift(self, n):
         self.load(self.app.current + dt.timedelta(days=n))
@@ -947,12 +933,18 @@ class SettingsScreen(Screen):
         c4 = Card("Данные")
         c4.add_widget(TLabel("База: " + self.app.db.path, size=11,
                              color=C["text_muted"]))
-        c4.add_widget(FlatButton("Сделать резервную копию", bg=C["surface_alt"],
+        c4.add_widget(FlatButton("Создать резервную копию", bg=C["surface_alt"],
                                  fg=C["text"], font=FONT, height=46,
                                  on_release=lambda *_: self.backup()))
+        self.btn_restore = FlatButton("Восстановить из резервной копии", bg=C["surface_alt"],
+                                     fg=C["text"], font=FONT, height=52, size=13,
+                                     on_release=lambda *_: self.app.restore_controller.open())
+        c4.add_widget(self.btn_restore)
         body.add_widget(c4)
-        body.add_widget(TLabel("Табель  •  учёт рабочего времени и выплат\nверсия 1.0",
+        body.add_widget(TLabel("Табель  •  учёт рабочего времени и выплат\nверсия 1.1.2",
                                size=12, color=C["text_muted"], halign="center"))
+        body.add_widget(TLabel("Проверочная сборка 1.1.2 • editor-restore-1", size=12,
+                               color=C["accent_dark"], halign="center"))
         self.load()
 
     def load(self):
@@ -984,9 +976,15 @@ class SettingsScreen(Screen):
         """Save JSON through Android's system document picker."""
         p = os.path.join(
             self.app.data_dir,
-            "tabel_backup_%s.json" % dt.datetime.now().strftime("%Y%m%d_%H%M%S"),
+            "tabel_backup_%s.json" % dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f"),
         )
-        self.app.db.export_json(p)
+        if getattr(self.app, '_restoring', False) or self.app._backup_pending_path:
+            return
+        try:
+            self.app.db.export_json(p)
+        except Exception as ex:
+            self.app._popup('Ошибка резервной копии', str(ex))
+            return
         if android_activity is None or not os.environ.get("ANDROID_ARGUMENT"):
             toast("Копия создана: " + p, "ok")
             return
@@ -1007,6 +1005,9 @@ class TabelApp(App):
         self.current = dt.date.today()
         self._backup_pending_path = None
         self._backup_result_bound = False
+        self._restoring = False
+        from restore_ui import RestoreController
+        self.restore_controller = RestoreController(self)
         Window.clearcolor = C["bg"]
 
         root = BoxLayout(orientation="vertical")
@@ -1115,56 +1116,89 @@ class TabelApp(App):
               title_font=FONTB).open()
 
     def begin_backup_save(self, path):
-        if self._backup_pending_path:
-            toast("Сохранение уже открыто", "warn")
+        if self._backup_pending_path or self._restoring:
+            toast("Операция с копией уже выполняется", "warn")
             return
         if android_activity is None:
-            toast("Системное сохранение доступно только на Android", "warn")
             return
         self._backup_pending_path = path
-        if not self._backup_result_bound:
+        try:
+            from android.runnable import run_on_ui_thread
             android_activity.bind(on_activity_result=self._on_backup_result)
             self._backup_result_bound = True
-        from jnius import autoclass
-        Intent = autoclass("android.content.Intent")
-        PythonActivity = autoclass("org.kivy.android.PythonActivity")
-        intent = Intent(Intent.ACTION_CREATE_DOCUMENT)
-        intent.addCategory(Intent.CATEGORY_OPENABLE)
-        intent.setType("application/json")
-        intent.putExtra(Intent.EXTRA_TITLE, os.path.basename(path))
-        PythonActivity.mActivity.startActivityForResult(intent, 4817)
+
+            @run_on_ui_thread
+            def launch():
+                try:
+                    from jnius import autoclass
+                    Intent = autoclass("android.content.Intent")
+                    intent = Intent(Intent.ACTION_CREATE_DOCUMENT)
+                    intent.addCategory(Intent.CATEGORY_OPENABLE)
+                    intent.setType("application/json")
+                    intent.putExtra(Intent.EXTRA_TITLE, os.path.basename(path))
+                    autoclass("org.kivy.android.PythonActivity").mActivity.startActivityForResult(intent, 4817)
+                except Exception as ex:
+                    Clock.schedule_once(lambda _dt, msg=str(ex): self._backup_done(msg), 0)
+            launch()
+        except Exception as ex:
+            self._backup_done(str(ex))
+
+    def _backup_done(self, error=None, cancelled=False):
+        if self._backup_result_bound:
+            android_activity.unbind(on_activity_result=self._on_backup_result)
+            self._backup_result_bound = False
+        self._backup_pending_path = None
+        if getattr(self, '_stopping', False):
+            return
+        if error:
+            self._popup("Ошибка сохранения копии", error)
+        elif cancelled:
+            toast("Сохранение отменено", "warn")
+        else:
+            toast("Резервная копия сохранена", "ok")
 
     def _on_backup_result(self, request_code, result_code, intent):
         if request_code != 4817:
             return
+        try:
+            uri = str(intent.getData().toString()) if result_code == -1 and intent is not None and intent.getData() is not None else None
+            Clock.schedule_once(lambda _dt: self._write_backup_uri(uri), 0)
+        except Exception as ex:
+            Clock.schedule_once(lambda _dt, msg=str(ex): self._backup_done(msg), 0)
+
+    def _write_backup_uri(self, uri):
         path = self._backup_pending_path
-        self._backup_pending_path = None
+        if getattr(self, '_stopping', False) or not path:
+            return
         if self._backup_result_bound:
             android_activity.unbind(on_activity_result=self._on_backup_result)
             self._backup_result_bound = False
-        if result_code != -1 or intent is None:
-            toast("Сохранение отменено", "warn")
+        if uri is None:
+            self._backup_done(cancelled=True)
             return
-        try:
-            from jnius import autoclass
-            uri = intent.getData()
-            if uri is None:
-                raise ValueError("Android не вернул URI файла")
-            resolver = autoclass("org.kivy.android.PythonActivity").mActivity.getContentResolver()
-            output = resolver.openOutputStream(uri, "w")
-            if output is None:
-                raise IOError("не удалось открыть файл")
-            with open(path, "rb") as source:
-                while True:
-                    chunk = source.read(65536)
-                    if not chunk:
-                        break
-                    output.write(bytearray(chunk))
-            output.flush()
-            output.close()
-            toast("Резервная копия сохранена", "ok")
-        except Exception as ex:
-            toast("Ошибка записи резервной копии: %s" % ex, "warn")
+        import threading
+        def copy_file():
+            try:
+                from jnius import autoclass
+                Uri = autoclass("android.net.Uri")
+                resolver = autoclass("org.kivy.android.PythonActivity").mActivity.getContentResolver()
+                output = resolver.openOutputStream(Uri.parse(uri), "wt")
+                if output is None:
+                    raise IOError("Не удалось открыть файл")
+                try:
+                    with open(path, "rb") as source:
+                        while True:
+                            chunk = source.read(65536)
+                            if not chunk:
+                                break
+                            output.write(bytearray(chunk))
+                    output.flush()
+                finally:
+                    output.close()
+                Clock.schedule_once(lambda _dt: self._backup_done(), 0)
+            except Exception as ex:
+                Clock.schedule_once(lambda _dt, msg=str(ex): self._backup_done(msg), 0)
+        threading.Thread(target=copy_file, daemon=True).start()
 
     def share_week(self):
         days = self.db.week_days(self.current)
@@ -1176,6 +1210,8 @@ class TabelApp(App):
         self._share(reports.export_text(days, "Табель. " + month_title(anchor)))
 
     def on_pause(self):
+        if getattr(self, '_restoring', False):
+            return True
         try:
             e = self.s_day.collect()
             saved = self.db.load_day(self.current)
@@ -1186,8 +1222,18 @@ class TabelApp(App):
         return True
 
     def on_stop(self):
+        self._stopping = True
         self.on_pause()
-        self.db.close()
+        try:
+            self.restore_controller.close()
+            if self._backup_result_bound:
+                android_activity.unbind(on_activity_result=self._on_backup_result)
+                self._backup_result_bound = False
+            editor = getattr(self.s_day, '_native_editor', None)
+            if editor:
+                editor.close()
+        finally:
+            self.db.close()
 
 
 def _f(text, default=0.0):

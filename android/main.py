@@ -1002,9 +1002,9 @@ class SettingsScreen(Screen):
                                      on_release=lambda *_: self.app.restore_controller.open())
         c4.add_widget(self.btn_restore)
         body.add_widget(c4)
-body.add_widget(TLabel("Табель  •  учёт рабочего времени и выплат\nверсия 1.1.3",
+        body.add_widget(TLabel("Табель  •  учёт рабочего времени и выплат\nверсия 1.1.3",
                                size=12, color=C["text_muted"], halign="center"))
-        body.add_widget(TLabel("Проверочная сборка 1.1.2 • editor-restore-1", size=12,
+        body.add_widget(TLabel("Проверочная сборка 1.1.3 • editor-restore-extra-1", size=12,
                                color=C["accent_dark"], halign="center"))
         self.load()
 

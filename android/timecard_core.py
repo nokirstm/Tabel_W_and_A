@@ -60,35 +60,35 @@ class DayEntry:
     rate: float = 250.0; note: str = ''
     approved_at: str = ''
 
-@property
+    @property
     def work_min(self): return max(0, span_minutes(self.start, self.end) - (max(0, int(self.lunch_min or 0)) if self.lunch_on else 0))
-@property
+    @property
     def extra_min(self): return span_minutes(self.extra_start, self.extra_end) if self.extra_on else 0
-@property
+    @property
     def total_min(self): return self.work_min + self.extra_min
-@property
+    @property
     def day_pay(self): return self.work_min / 60.0 * float(self.rate or 0)
-@property
-def extra_pay(self):
+    @property
+    def extra_pay(self):
         if not self.extra_on: return 0.0
         return float(self.extra_fixed or 0) if self.extra_use_fixed else self.extra_min / 60.0 * float(self.extra_rate or 0)
     @property
     def gross_pay(self): return self.day_pay + self.extra_pay + float(self.bonus or 0)
-@property
+    @property
     def total_pay(self): return max(0.0, self.gross_pay - (float(self.penalty or 0) if self.penalty_on else 0))
-@property
+    @property
     def date_obj(self): return dt.date.fromisoformat(self.date)
-@property
+    @property
     def weekday_name(self): return WEEKDAYS_RU[self.date_obj.weekday()]
-@property
+    @property
     def is_empty(self): return (self.start is None and self.end is None and not self.works.strip() and not self.extra_on and not float(self.bonus or 0) and not (self.penalty_on and float(self.penalty or 0)))
 
     def to_dict(self): return asdict(self)
-@staticmethod
-def from_row(row):
+    @staticmethod
+    def from_row(row):
         d = dict(row); d.pop('id', None)
         for k in ('lunch_on','extra_on','extra_use_fixed','penalty_on'): d[k] = bool(d.get(k, 0))
-return DayEntry(**d)
+        return DayEntry(**d)
 
 def week_start(d): return d - dt.timedelta(days=d.weekday())
 def week_range(d):
@@ -97,13 +97,13 @@ def week_title(d):
     a,b = week_range(d); return '%02d.%02d – %02d.%02d.%d' % (a.day,a.month,b.day,b.month,b.year)
 def month_title(d): return '%s %d' % (MONTHS_RU[d.month-1], d.year)
 def month_range(d):
-first = d.replace(day=1)
+    first = d.replace(day=1)
     nxt = dt.date(first.year + (first.month==12), 1 if first.month==12 else first.month+1, 1)
     return first, nxt - dt.timedelta(days=1)
 
 class Totals:
-def __init__(self, entries):
-self.days = [e for e in entries if not e.is_empty]
+    def __init__(self, entries):
+        self.days = [e for e in entries if not e.is_empty]
         self.work_min = sum(e.work_min for e in self.days); self.extra_min = sum(e.extra_min for e in self.days)
         self.total_min = self.work_min + self.extra_min; self.day_pay = sum(e.day_pay for e in self.days); self.extra_pay = sum(e.extra_pay for e in self.days)
         self.bonus = sum(float(e.bonus or 0) for e in self.days); self.penalty = sum(float(e.penalty or 0) if e.penalty_on else 0 for e in self.days)
@@ -120,12 +120,12 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 DEFAULT_SETTINGS = {'rate':'250','extra_rate':'250','default_start':'8:00','default_end':'17:00','default_lunch':'60','employee':'','employee_id':'','secret_key':'','organization':'','rounding':'ruble','received_date':'','received':'0'}
 
 class Storage:
-def __init__(self, path=None):
+    def __init__(self, path=None):
         self.path = path or os.path.join(default_data_dir(), DB_FILENAME); os.makedirs(os.path.dirname(self.path), exist_ok=True)
         self.conn = sqlite3.connect(self.path); self.conn.row_factory = sqlite3.Row; self.conn.executescript(SCHEMA)
         self._migrate();
         for k,v in DEFAULT_SETTINGS.items(): self.conn.execute('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)',(k,v))
-self.conn.commit()
+        self.conn.commit()
     def _migrate(self):
         cols = {r['name'] for r in self.conn.execute('PRAGMA table_info(days)')}
         for col,typ in [('penalty_on','INTEGER DEFAULT 0'),('penalty','REAL DEFAULT 0'),('approved_at',"TEXT DEFAULT ''")]:
@@ -147,7 +147,7 @@ self.conn.commit()
     def range_days(self,d1,d2):
         rows=self.conn.execute('SELECT * FROM days WHERE date BETWEEN ? AND ? ORDER BY date',(d1.isoformat(),d2.isoformat())).fetchall(); saved={r['date']:DayEntry.from_row(r) for r in rows}; out=[]; cur=d1
         while cur<=d2: out.append(saved.get(cur.isoformat(),DayEntry(date=cur.isoformat(),rate=self.get_float('rate',250),extra_rate=self.get_float('extra_rate',250)))); cur+=dt.timedelta(days=1)
-return out
+        return out
     def week_days(self,anchor): a,b=week_range(anchor); return self.range_days(a,b)
     def month_days(self,anchor): a,b=month_range(anchor); return self.range_days(a,b)
     def week_complete(self,anchor):
@@ -163,5 +163,5 @@ return out
                 'days': [DayEntry.from_row(r).to_dict() for r in self.conn.execute('SELECT * FROM days ORDER BY date')]}
         with open(path, 'w', encoding='utf-8') as output:
             json.dump(data, output, ensure_ascii=False, indent=2)
-return path
+        return path
     def close(self): self.conn.close()

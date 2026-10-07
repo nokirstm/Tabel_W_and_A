@@ -1,10 +1,17 @@
 # -*- coding: utf-8 -*-
-"""Табель 2.0 — Android (Kivy). Синхронизация с сервером Google Apps Script."""
+"""
+Табель 2.0 — учёт рабочего времени и выплат.
+Android-версия (Kivy). Собирается в .apk через buildozer.
+Использует то же ядро расчётов, что и Windows-версия: core/timecard_core.py
+
+ВЕРСИЯ 2.0.0 - Добавлена синхронизация с сервером
+"""
 import os
 import sys
 import datetime as dt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# Always use Android's own model, including when testing from the repository root.
 if HERE in sys.path:
     sys.path.remove(HERE)
 sys.path.insert(0, HERE)
@@ -19,6 +26,8 @@ from kivy.core.text import LabelBase
 from kivy.core.window import Window
 from kivy.metrics import dp, sp
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.floatlayout import FloatLayout
+from kivy.uix.gridlayout import GridLayout
 from kivy.uix.label import Label
 from kivy.uix.button import Button
 from kivy.uix.textinput import TextInput
@@ -30,29 +39,31 @@ from kivy.clock import Clock
 from kivy.utils import get_color_from_hex as hexc
 
 from timecard_core import (THEME as T, DayEntry, Storage, Totals, WEEKDAYS_RU,
-                           WEEKDAYS_RU_SHORT, MONTHS_RU, parse_time,
-                           parse_duration, fmt_time, fmt_hm, fmt_hm_short,
-                           fmt_money, week_start, week_title, month_title)
+                           WEEKDAYS_RU_SHORT, MONTHS_RU, parse_time, parse_duration,
+                           fmt_time, fmt_hm, fmt_hm_short, fmt_money,
+                           week_range, week_start, week_title, month_title, month_range)
 import reports
 
+# Android system document picker for backups. No FileProvider is needed.
 try:
     from android import activity as android_activity
 except ImportError:
     android_activity = None
 
+# === СИНХРОНИЗАЦИЯ С СЕРВЕРОМ ===
 try:
     from sync_client import SyncClient
     SYNC_AVAILABLE = True
 except ImportError:
     SYNC_AVAILABLE = False
 
-# === НАСТРОЙКИ СЕРВЕРА: впиши свой ACCESS_TOKEN сюда перед сборкой ===
 SYNC_API_URL = ("https://script.google.com/macros/s/"
                 "AKfycbwDWAS8t__5y3WdFudGQa8OMyWxxBYl56tiJY5RHjR1EmBPiyTrlXUpa2CcmI-q3sQBdQ/exec")
 SYNC_API_TOKEN = "28096b2395454f05a7ce7a2b0fcfe3b2e58fd9bed8d5465db4560056a662659c"
 
 C = {k: hexc(v) for k, v in T.items()}
 
+# --- шрифты с кириллицей ---
 for name, fn in (("Regular", "DejaVuSans.ttf"), ("Bold", "DejaVuSans-Bold.ttf")):
     for base in (os.path.join(HERE, "assets"), HERE,
                  "/usr/share/fonts/truetype/dejavu"):
@@ -61,11 +72,13 @@ for name, fn in (("Regular", "DejaVuSans.ttf"), ("Bold", "DejaVuSans-Bold.ttf"))
             LabelBase.register(name=name, fn_regular=f)
             break
     else:
-        LabelBase.register(name=name, fn_regular="Roboto")
-
+        LabelBase.register(name=name, fn_regular=LabelBase.default_font_paths[0]
+                           if hasattr(LabelBase, "default_font_paths") else "Roboto")
 FONT = "Regular"
 FONTB = "Bold"
 
+
+# ---------------------------------------------------------------- базовые виджеты
 class Card(BoxLayout):
     def __init__(self, title=None, bg=None, radius=14, **kw):
         kw.setdefault("orientation", "vertical")
@@ -80,12 +93,13 @@ class Card(BoxLayout):
             self._r = RoundedRectangle(radius=[dp(radius)])
         self.bind(pos=self._sync, size=self._sync)
         if title:
-            self.add_widget(TLabel(title, font=FONTB, size=17,
-                                   color=C["accent_dark"], height=dp(26)))
+            self.add_widget(TLabel(title, font=FONTB, size=17, color=C["accent_dark"],
+                                   height=dp(26)))
         self._auto_h = self.setter("height")
         self.bind(minimum_height=self._auto_h)
 
     def collapse(self, show):
+        """Свернуть/развернуть панель (для полей под галочкой)."""
         self._collapsed = not show
         if show:
             self.opacity = 1
@@ -99,6 +113,7 @@ class Card(BoxLayout):
             self.height = 0
 
     def on_touch_down(self, touch):
+        # height=0/opacity=0 do NOT remove children from Kivy hit testing.
         if self._collapsed:
             return False
         return super().on_touch_down(touch)
@@ -117,12 +132,13 @@ class Card(BoxLayout):
         self._r.pos = self.pos
         self._r.size = self.size
 
+
 class TLabel(Label):
     def __init__(self, text="", size=15, color=None, font=FONT, halign="left",
-                 height=None, **kw):
+                 height=None, bold=False, **kw):
         super().__init__(text=text, font_size=sp(size), font_name=font,
-                         color=color or C["text"], halign=halign,
-                         valign="middle", size_hint_y=None, **kw)
+                         color=color or C["text"], halign=halign, valign="middle",
+                         size_hint_y=None, **kw)
         self._fixed = height
         self.bind(width=lambda *_: setattr(self, "text_size", (self.width, None)))
         self.bind(texture_size=self._resize)
@@ -133,16 +149,17 @@ class TLabel(Label):
         if not self._fixed:
             self.height = self.texture_size[1] + dp(2)
 
+
 class TInput(TextInput):
     def __init__(self, hint="", numeric=False, height=48, multiline=False, **kw):
-        super().__init__(hint_text=hint, multiline=multiline,
-                         background_normal="", background_active="",
-                         background_color=C["white"], foreground_color=C["text"],
-                         cursor_color=C["accent"], hint_text_color=C["text_muted"],
-                         font_name=FONT, font_size=sp(17), padding=[dp(10), dp(12)],
-                         size_hint_y=None, height=dp(height),
-                         input_type="number" if numeric else "text",
-                         write_tab=False, **kw)
+        super().__init__(
+            hint_text=hint, multiline=multiline,
+            background_normal="", background_active="", background_color=C["white"],
+            foreground_color=C["text"], cursor_color=C["accent"],
+            hint_text_color=C["text_muted"], font_name=FONT, font_size=sp(17),
+            padding=[dp(10), dp(12)], size_hint_y=None, height=dp(height),
+            input_type="number" if numeric else "text",
+            write_tab=False, **kw)
         with self.canvas.after:
             self._c = Color(*C["border"])
             self._l = Line(width=1.2)
@@ -154,13 +171,14 @@ class TInput(TextInput):
     def _focus(self, _w, val):
         self._c.rgba = C["accent"] if val else C["border"]
 
+
 class FlatButton(Button):
     def __init__(self, text, bg=None, fg=None, height=50, size=16, font=FONTB,
                  radius=10, **kw):
         super().__init__(text=text, background_normal="", background_down="",
                          background_color=(0, 0, 0, 0), color=fg or C["white"],
-                         font_name=font, font_size=sp(size), size_hint_y=None,
-                         height=dp(height), **kw)
+                         font_name=font, font_size=sp(size),
+                         size_hint_y=None, height=dp(height), **kw)
         self._bg = bg or C["accent"]
         with self.canvas.before:
             self._c = Color(*self._bg)
@@ -175,8 +193,11 @@ class FlatButton(Button):
         k = 0.86 if st == "down" else 1.0
         self._c.rgba = (r * k, g * k, b * k, a)
 
+
 class Toggle(BoxLayout):
-    def __init__(self, text, on_toggle=None, **kw):
+    """Галочка: квадрат + подпись, вся строка кликабельна."""
+
+    def __init__(self, text, on_toggle=None, bg=None, **kw):
         super().__init__(orientation="horizontal", size_hint_y=None,
                          height=dp(46), spacing=dp(10), **kw)
         self.active = False
@@ -190,6 +211,10 @@ class Toggle(BoxLayout):
             self._lc = Color(*C["border"])
             self._ln = Line(width=1.4)
         self.box.bind(pos=self._sync, size=self._sync)
+        self.mark = TLabel("", size=17, font=FONTB, color=C["white"],
+                           halign="center", height=dp(26))
+        self.mark.size_hint_x = None
+        self.mark.width = dp(0)
         self.lbl = TLabel(text, size=15, font=FONTB)
         self.add_widget(self.box)
         self.add_widget(self.lbl)
@@ -200,101 +225,110 @@ class Toggle(BoxLayout):
         self._ln.rounded_rectangle = (self.box.x, self.box.y, self.box.width,
                                       self.box.height, dp(6))
 
-    def set(self, active):
-        self.active = active
-        if active:
-            self._bc.rgba = C["accent"]
-            self.box.text = "✓"
-        else:
-            self._bc.rgba = C["white"]
-            self.box.text = ""
-
     def _touch(self, _w, touch):
-        if not self.collide_point(*touch.pos):
+        if self.disabled:
             return False
-        self.set(not self.active)
-        if self.on_toggle:
-            self.on_toggle(self.active)
-        return True
+        if self.collide_point(*touch.pos):
+            self.set(not self.active)
+            if self.on_toggle:
+                self.on_toggle(self.active)
+            return True
+        return False
 
-def field(label, hint, numeric=False):
-    box = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(4))
-    box.add_widget(TLabel(label, size=13, color=C["text_muted"], height=dp(20)))
-    inp = TInput(hint=hint, numeric=numeric, height=44)
+    def set(self, val):
+        self.active = bool(val)
+        self._bc.rgba = C["accent"] if self.active else C["white"]
+        self._lc.rgba = C["accent_dark"] if self.active else C["border"]
+        self.box.text = "\u2713" if self.active else ""
+        self.lbl.color = C["accent_dark"] if self.active else C["text"]
+
+    def get(self):
+        return self.active
+
+
+class Row(BoxLayout):
+    def __init__(self, left, right, bold=False, color=None, size=15, **kw):
+        super().__init__(orientation="horizontal", size_hint_y=None,
+                         height=dp(26), **kw)
+        a = TLabel(left, size=size, font=FONTB if bold else FONT,
+                   color=color or C["text"], height=dp(26))
+        b = TLabel(right, size=size, font=FONTB, halign="right",
+                   color=color or C["text"], height=dp(26))
+        self.add_widget(a)
+        self.add_widget(b)
+        self.value = b
+
+
+def field(label, hint="", numeric=False, on_text=None, height=48):
+    """Подпись + поле ввода в вертикальной коробке."""
+    box = BoxLayout(orientation="vertical", size_hint_y=None,
+                    height=dp(height + 20), spacing=dp(2))
+    box.add_widget(TLabel(label, size=12, color=C["text_muted"], height=dp(18)))
+    inp = TInput(hint=hint, numeric=numeric, height=height)
+    if on_text:
+        inp.bind(text=lambda *a: on_text())
     box.add_widget(inp)
-    box.height = dp(68)
     box.input = inp
     return box
 
-def Row(label, value, bold=False, size=15, color=None):
-    row = BoxLayout(orientation="horizontal", size_hint_y=None, height=dp(24))
-    row.add_widget(TLabel(label, size=size, font=FONTB if bold else FONT,
-                          height=dp(24)))
-    row.add_widget(TLabel(value, size=size, font=FONTB if bold else FONT,
-                          color=color or C["text"], halign="right", height=dp(24)))
-    return row
 
 def toast(text, kind="ok"):
-    color = C["ok"] if kind == "ok" else C["warn"]
-    p = Popup(title="", content=TLabel(text, size=14, color=color,
-                                       halign="center"),
-              size_hint=(0.85, 0.18), auto_dismiss=True)
-    p.open()
-    Clock.schedule_once(lambda *_: p.dismiss(), 2.5)
+    from kivy.animation import Animation
+    col = {"ok": C["ok"], "warn": C["warn"], "err": C["danger"]}.get(kind, C["ok"])
+    lbl = Label(text=text, font_name=FONTB, font_size=sp(14), color=C["white"],
+                size_hint=(None, None), padding=(dp(18), dp(12)))
+    lbl.texture_update()
+    lbl.size = (lbl.texture_size[0] + dp(36), lbl.texture_size[1] + dp(24))
+    with lbl.canvas.before:
+        Color(*col)
+        r = RoundedRectangle(radius=[dp(10)])
+    lbl.bind(pos=lambda *a: setattr(r, "pos", lbl.pos),
+             size=lambda *a: setattr(r, "size", lbl.size))
+    lbl.pos = (Window.width / 2 - lbl.width / 2, dp(90))
+    Window.add_widget(lbl)
+    Animation(opacity=0, duration=0.6, t="in_quad").start(lbl)
+    Clock.schedule_once(lambda *_: Window.remove_widget(lbl), 2.2)
 
-def _f(text, default=0.0):
-    try:
-        return float(str(text).replace(",", ".").replace(" ", ""))
-    except (TypeError, ValueError):
-        return default
 
-def _num(v):
-    v = float(v or 0)
-    return str(int(v)) if abs(v - int(v)) < 1e-9 else ("%.2f" % v)
-
-def _sync_payload(e):
-    """Данные дня для сервера без служебных полей."""
-    d = e.to_dict()
-    for k in ("version", "sync_status", "approved_at"):
-        d.pop(k, None)
-    return d
-
-# ---------------------------------------------------------------- экран ДЕНЬ
+# ------------------------------------------------------------------ экран ДЕНЬ
 class DayScreen(Screen):
     def __init__(self, app, **kw):
         super().__init__(name="day", **kw)
         self.app = app
         self._loading = False
-        self._loaded_entry = None
-        self._works_text = ""
-        self._xworks_text = ""
+        self._editor_busy = False
+        self._editor_target = "works"
+        self._editor_date = None
         self._native_editor = None
-
         root = BoxLayout(orientation="vertical")
         self.add_widget(root)
 
-        head = BoxLayout(size_hint_y=None, height=dp(60), padding=[dp(10), dp(6)],
-                         spacing=dp(6))
-        with head.canvas.before:
+        # навигация по дате
+        nav = BoxLayout(size_hint_y=None, height=dp(58), padding=[dp(8), dp(6)],
+                        spacing=dp(6))
+        with nav.canvas.before:
             Color(*C["surface"])
-            hr = Rectangle()
-        head.bind(pos=lambda *a: setattr(hr, "pos", head.pos),
-                  size=lambda *a: setattr(hr, "size", head.size))
-        head.add_widget(FlatButton("<", bg=C["accent_dark"], height=48, size=20,
-                                   size_hint_x=None, width=dp(50),
-                                   on_release=lambda _b: self.shift(-1)))
-        dbox = BoxLayout(orientation="vertical", spacing=dp(2))
-        self.l_wd = TLabel("", size=16, font=FONTB, color=C["accent_dark"],
+            nr = Rectangle()
+        nav.bind(pos=lambda *a: setattr(nr, "pos", nav.pos),
+                 size=lambda *a: setattr(nr, "size", nav.size))
+        nav.add_widget(FlatButton("<", bg=C["accent_dark"], height=44, size=18,
+                                  size_hint_x=None, width=dp(52),
+                                  on_release=lambda *_: self.shift(-1)))
+        mid = BoxLayout(orientation="vertical")
+        self.l_wd = TLabel("", size=17, font=FONTB, color=C["accent_dark"],
                            halign="center", height=dp(24))
-        self.l_dt = TLabel("", size=12, color=C["text_muted"], halign="center",
-                           height=dp(18))
-        dbox.add_widget(self.l_wd)
-        dbox.add_widget(self.l_dt)
-        head.add_widget(dbox)
-        head.add_widget(FlatButton(">", bg=C["accent_dark"], height=48, size=20,
-                                   size_hint_x=None, width=dp(50),
-                                   on_release=lambda _b: self.shift(1)))
-        root.add_widget(head)
+        self.l_dt = TLabel("", size=13, color=C["text_muted"], halign="center",
+                           height=dp(20))
+        mid.add_widget(self.l_wd)
+        mid.add_widget(self.l_dt)
+        nav.add_widget(mid)
+        nav.add_widget(FlatButton(">", bg=C["accent_dark"], height=44, size=18,
+                                  size_hint_x=None, width=dp(52),
+                                  on_release=lambda *_: self.shift(1)))
+        nav.add_widget(FlatButton("сег.", bg=C["surface_alt"], fg=C["text"], height=44,
+                                  size=13, size_hint_x=None, width=dp(54),
+                                  on_release=lambda *_: self.load(dt.date.today())))
+        root.add_widget(nav)
 
         sc = ScrollView(do_scroll_x=False)
         body = BoxLayout(orientation="vertical", size_hint_y=None,
@@ -303,247 +337,317 @@ class DayScreen(Screen):
         sc.add_widget(body)
         root.add_widget(sc)
 
-        time_card = Card("Рабочее время")
-        trow = BoxLayout(orientation="horizontal", size_hint_y=None,
-                         height=dp(70), spacing=dp(8))
-        self.f_start = field("Начало", "8:00")
-        self.f_end = field("Конец", "17:00")
-        trow.add_widget(self.f_start)
-        trow.add_widget(self.f_end)
-        time_card.add_widget(trow)
-        self.t_lunch = Toggle("Был обед", self._toggle_lunch)
-        time_card.add_widget(self.t_lunch)
-        self.lunch_box = Card(bg=C["surface_alt"], radius=10)
-        self.f_lunch = field("Обед, минут", "60", True)
-        self.lunch_box.add_widget(self.f_lunch)
-        brow = BoxLayout(orientation="horizontal", size_hint_y=None,
-                         height=dp(36), spacing=dp(6))
-        for mins in (30, 45, 60):
-            brow.add_widget(FlatButton(str(mins), bg=C["accent_light"],
-                                       fg=C["accent_dark"], height=36, size=13,
-                                       font=FONT,
-                                       on_release=lambda _b, m=mins: self._set_lunch(m)))
-        self.lunch_box.add_widget(brow)
-        time_card.add_widget(self.lunch_box)
-        self.lunch_box.collapse(False)
+        # --- время работы ---
+        c1 = Card("Время работы")
+        gr = BoxLayout(size_hint_y=None, height=dp(70), spacing=dp(10))
+        self.f_start = field("Начало работы", "8:00", True, self.recalc)
+        self.f_end = field("Конец работы", "17:15", True, self.recalc)
+        gr.add_widget(self.f_start)
+        gr.add_widget(self.f_end)
+        c1.add_widget(gr)
 
-        works_card = Card("Объём и качество работ")
-        self.lbl_works = TLabel("что делал на работе…", size=13,
-                                color=C["text_muted"])
-        works_card.add_widget(self.lbl_works)
-        self.btn_works = FlatButton("Редактировать описание", bg=C["surface_alt"],
-                                    fg=C["accent_dark"], height=38, size=13,
-                                    font=FONT,
-                                    on_release=lambda _b: self._edit_works())
-        works_card.add_widget(self.btn_works)
+        self.t_lunch = Toggle("Был обед (вычесть из времени)", self._lunch)
+        c1.add_widget(self.t_lunch)
+        self.lunch_box = Card(bg=C["surface_alt"], radius=10, padding=[dp(10)] * 4)
+        lg = BoxLayout(size_hint_y=None, height=dp(70), spacing=dp(8))
+        self.f_lunch = field("Обед, минут", "60", True, self.recalc)
+        lg.add_widget(self.f_lunch)
+        qb = BoxLayout(orientation="vertical", spacing=dp(4), size_hint_x=None,
+                       width=dp(150))
+        qb.add_widget(TLabel("быстро", size=11, color=C["text_muted"], height=dp(16)))
+        qr = BoxLayout(spacing=dp(4), size_hint_y=None, height=dp(44))
+        for m in ("30", "45", "60"):
+            qr.add_widget(FlatButton(m, bg=C["accent_light"], fg=C["accent_dark"],
+                                     height=44, size=13, font=FONT,
+                                     on_release=lambda _b, v=m: self._set_lunch(v)))
+        qb.add_widget(qr)
+        lg.add_widget(qb)
+        self.lunch_box.add_widget(lg)
+        c1.add_widget(self.lunch_box)
+        body.add_widget(c1)
 
-        extra_card = Card("Дополнительные работы")
-        self.t_extra = Toggle("Были доп. работы", self._toggle_extra)
-        extra_card.add_widget(self.t_extra)
-        self.extra_box = Card(bg=C["surface_alt"], radius=10)
-        xrow = BoxLayout(orientation="horizontal", size_hint_y=None,
-                         height=dp(70), spacing=dp(8))
-        self.f_xstart = field("Начало доп.", "")
-        self.f_xend = field("Конец доп.", "")
-        xrow.add_widget(self.f_xstart)
-        xrow.add_widget(self.f_xend)
-        self.extra_box.add_widget(xrow)
-        rrow = BoxLayout(orientation="horizontal", size_hint_y=None,
-                         height=dp(70), spacing=dp(8))
-        self.f_xrate = field("Ставка ₽/час", "250", True)
-        self.f_xfixed = field("Фикс. сумма ₽", "", True)
-        rrow.add_widget(self.f_xrate)
-        rrow.add_widget(self.f_xfixed)
-        self.extra_box.add_widget(rrow)
-        self.t_xfixed = Toggle("Оплата фиксированной суммой", self._toggle_xfixed)
+        # --- работы ---
+        c3 = Card("Объём и качество произведённых работ")
+        # Видимая область сохраняется. На Android любое нажатие по ней
+        # открывает настоящий android.widget.EditText.
+        self._works_text = ""
+        self._extra_works_text = ""
+        self._editor_target = None
+        self._native_editor = None
+        self._editor_busy = False
+        self.lbl_works = FlatButton("что делал на работе…", height=130,
+                                   bg=C["white"], fg=C["text"], size=15, font=FONT,
+                                   halign="left", valign="top", padding=(dp(12), dp(12)),
+                                   on_release=lambda *_: self._open_works_editor())
+        self.lbl_works.bind(size=lambda w, size: setattr(w, "text_size", (size[0]-dp(24), size[1]-dp(24))))
+        c3.add_widget(self.lbl_works)
+        self.btn_works = FlatButton("✎  Редактировать описание работ",
+                                    bg=C["surface_alt"], fg=C["accent_dark"],
+                                    height=42, size=14, font=FONT,
+                                    on_release=lambda *_: self._open_works_editor())
+        c3.add_widget(self.btn_works)
+        body.add_widget(c3)
+
+        # --- дополнительные работы ---
+        c4 = Card("Дополнительные работы")
+        self.t_extra = Toggle("Были дополнительные работы", self._extra)
+        c4.add_widget(self.t_extra)
+        self.extra_box = Card(bg=C["surface_alt"], radius=10, padding=[dp(10)] * 4)
+        g1 = BoxLayout(size_hint_y=None, height=dp(70), spacing=dp(8))
+        self.f_xstart = field("Начало доп.", "10:00", True, self.recalc)
+        self.f_xend = field("Конец доп.", "16:30", True, self.recalc)
+        g1.add_widget(self.f_xstart)
+        g1.add_widget(self.f_xend)
+        self.extra_box.add_widget(g1)
+        self.f_xrate = field("Ставка доп. работ, ₽/час", "250", True, self.recalc)
+        self.extra_box.add_widget(self.f_xrate)
+        self.t_xfixed = Toggle("Оплата фиксированной суммой", lambda *_: self.recalc())
         self.extra_box.add_widget(self.t_xfixed)
-        self.lbl_xworks = TLabel("что делал дополнительно…", size=13,
-                                 color=C["text_muted"])
-        self.extra_box.add_widget(self.lbl_xworks)
-        self.btn_xworks = FlatButton("Редактировать описание", bg=C["accent_light"],
-                                     fg=C["accent_dark"], height=38, size=13,
-                                     font=FONT,
-                                     on_release=lambda _b: self._edit_xworks())
-        self.extra_box.add_widget(self.btn_xworks)
-        extra_card.add_widget(self.extra_box)
-        self.extra_box.collapse(False)
+        self.f_xfixed = field("Сумма за доп. работы, ₽", "0", True, self.recalc)
+        self.extra_box.add_widget(self.f_xfixed)
 
-        bonus_card = Card("Премия и штраф")
-        self.f_bonus = field("Премия ₽", "", True)
-        bonus_card.add_widget(self.f_bonus)
-        self.t_penalty = Toggle("Был штраф", self._toggle_penalty)
-        bonus_card.add_widget(self.t_penalty)
-        self.penalty_box = Card(bg=C["surface_alt"], radius=10)
-        self.f_penalty = field("Штраф ₽", "", True)
+        # Описание дополнительных работ редактируется тем же нативным
+        # Android EditText, что и описание обычных работ.
+        self.lbl_xworks = FlatButton("описание доп. работ…", height=100,
+                                     bg=C["white"], fg=C["text_muted"], size=15,
+                                     font=FONT, halign="left", valign="top",
+                                     padding=(dp(12), dp(12)),
+                                     on_release=lambda *_: self._open_extra_works_editor())
+        self.lbl_xworks.bind(size=lambda w, size: setattr(
+            w, "text_size", (size[0] - dp(24), size[1] - dp(24))))
+        self.extra_box.add_widget(self.lbl_xworks)
+        self.btn_xworks = FlatButton("✎  Редактировать описание доп. работ",
+                                     bg=C["surface_alt"], fg=C["accent_dark"],
+                                     height=42, size=14, font=FONT,
+                                     on_release=lambda *_: self._open_extra_works_editor())
+        self.extra_box.add_widget(self.btn_xworks)
+        c4.add_widget(self.extra_box)
+        body.add_widget(c4)
+        # --- премия ---
+        c5 = Card("Премия")
+        self.f_bonus = field("Разовая сумма за день, ₽", "0", True, self.recalc)
+        c5.add_widget(self.f_bonus)
+        body.add_widget(c5)
+
+        # --- штраф (вводит работник, вычитается из итога) ---
+        c6 = Card("Штраф")
+        self.t_penalty = Toggle("Был штраф", self._penalty)
+        c6.add_widget(self.t_penalty)
+        self.penalty_box = Card(bg=C["surface_alt"], radius=10, padding=[dp(10)] * 4)
+        self.f_penalty = field("Сумма штрафа, ₽", "0", True, self.recalc)
         self.penalty_box.add_widget(self.f_penalty)
-        bonus_card.add_widget(self.penalty_box)
+        c6.add_widget(self.penalty_box)
+        body.add_widget(c6)
+
+        # --- расчёт ---
+        c2 = Card("Расчёт за день", bg=C["accent_light"])
+        self.r_hours = Row("Отработано (основное)", "0 ч 00 мин", bold=True,
+                           color=C["accent_dark"])
+        self.r_xhours = Row("Дополнительно", "0 ч 00 мин", color=C["accent_dark"])
+        self.r_pay = Row("Оплата за день", "0 ₽")
+        self.r_xpay = Row("Доп. работы", "0 ₽")
+        self.r_bonus = Row("Премия", "0 ₽")
+        self.r_penalty = Row("Штраф", "0 ₽")
+        for r in (self.r_hours, self.r_xhours, self.r_pay, self.r_xpay, self.r_bonus, self.r_penalty):
+            c2.add_widget(r)
+        self.r_total = Row("ИТОГО ЗА ДЕНЬ", "0 ₽", bold=True, size=19, color=C["ok"])
+        self.r_total.height = dp(34)
+        c2.add_widget(self.r_total)
+        body.add_widget(c2)
+
+        # --- кнопки ---
+        body.add_widget(FlatButton("СОХРАНИТЬ ДЕНЬ", height=56, size=17,
+                                   on_release=lambda *_: self.save()))
+        br = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
+        br.add_widget(FlatButton("По умолчанию", bg=C["surface_alt"], fg=C["text"],
+                                 height=46, size=13, font=FONT,
+                                 on_release=lambda *_: self.defaults()))
+        br.add_widget(FlatButton("Очистить день", bg=hexc("#E7D3D1"), fg=C["danger"],
+                                 height=46, size=13, font=FONT,
+                                 on_release=lambda *_: self.clear()))
+        body.add_widget(br)
+        body.add_widget(TLabel("", height=dp(10)))
+
+        self.body = body
+        self._panels_visible = {"lunch": True, "extra": True}
+        self._hide_panels()
         self.penalty_box.collapse(False)
 
-        btns = BoxLayout(orientation="horizontal", size_hint_y=None,
-                         height=dp(50), spacing=dp(8))
-        btns.add_widget(FlatButton("СОХРАНИТЬ", height=50,
-                                   on_release=lambda _b: self.save()))
-        btns.add_widget(FlatButton("Очистить", bg=C["danger"], height=50,
-                                   on_release=lambda _b: self.clear()))
+    # -- показ/скрытие панелей --
+    def _hide_panels(self):
+        self._toggle_panel("lunch", False)
+        self._toggle_panel("extra", False)
 
-        tot = Card("ИТОГО ЗА ДЕНЬ", bg=hexc("#C9DFF2"))
-        self.r_hours = Row("Часов основных", "")
-        self.r_xhours = Row("Часов дополнительных", "")
-        self.r_day = Row("Оплата за день", "")
-        self.r_extra = Row("Доп. работы", "")
-        self.r_bonus = Row("Премия", "")
-        self.r_penalty = Row("Штраф", "")
-        self.r_total = Row("ВСЕГО", "", bold=True, size=18, color=C["ok"])
-        self.r_total.height = dp(32)
-        for w in (self.r_hours, self.r_xhours, self.r_day, self.r_extra,
-                  self.r_bonus, self.r_penalty, self.r_total):
-            tot.add_widget(w)
+    def _toggle_panel(self, which, show):
+        w = self.lunch_box if which == "lunch" else self.extra_box
+        w.collapse(show)
+        self._panels_visible[which] = show
 
-        body.add_widget(time_card)
-        body.add_widget(works_card)
-        body.add_widget(extra_card)
-        body.add_widget(bonus_card)
-        body.add_widget(btns)
-        body.add_widget(tot)
-
-        for inp in (self.f_start.input, self.f_end.input, self.f_lunch.input,
-                    self.f_xstart.input, self.f_xend.input, self.f_xrate.input,
-                    self.f_xfixed.input, self.f_bonus.input, self.f_penalty.input):
-            inp.bind(text=lambda *_: self.recalc())
-
-    # -- нативный редактор описаний (как в 1.1.3) --
-    def _ensure_editor(self):
-        if self._native_editor is None:
-            try:
-                from native_editor import NativeEditor
-                self._native_editor = NativeEditor()
-            except Exception:
-                self._native_editor = False
-        return self._native_editor or None
-
-    def _edit_works(self):
-        ed = self._ensure_editor()
-        if ed:
-            try:
-                if ed.open("Объём работ", self._works_text, self._on_works):
-                    return
-            except Exception:
-                pass
-        self._popup_edit("works")
-
-    def _edit_xworks(self):
-        ed = self._ensure_editor()
-        if ed:
-            try:
-                if ed.open("Доп. работы", self._xworks_text, self._on_xworks):
-                    return
-            except Exception:
-                pass
-        self._popup_edit("xworks")
-
-    def _on_works(self, status, text):
-        if status in ("ok", "saved", "apply"):
-            self._set_works(text)
-
-    def _on_xworks(self, status, text):
-        if status in ("ok", "saved", "apply"):
-            self._set_xworks(text)
-
-    def _popup_edit(self, which):
-        txt = TextInput(text=self._works_text if which == "works" else self._xworks_text,
-                        multiline=True, font_name=FONT, font_size=sp(15))
-        p = Popup(title="Описание", content=txt, size_hint=(0.9, 0.5))
-
-        def done(*_):
-            if which == "works":
-                self._set_works(txt.text)
-            else:
-                self._set_xworks(txt.text)
-            p.dismiss()
-        txt.bind(on_text_validate=done)
-        Clock.schedule_once(lambda *_: setattr(txt, "focus", True), 0.2)
-        p.open()
-
-    def _set_works(self, text):
-        self._works_text = text or ""
-        if self._works_text:
-            self.lbl_works.text = self._works_text
-            self.lbl_works.color = C["text"]
-        else:
-            self.lbl_works.text = "что делал на работе…"
-            self.lbl_works.color = C["text_muted"]
-
-    def _set_xworks(self, text):
-        self._xworks_text = text or ""
-        if self._xworks_text:
-            self.lbl_xworks.text = self._xworks_text
-            self.lbl_xworks.color = C["text"]
-        else:
-            self.lbl_xworks.text = "что делал дополнительно…"
-            self.lbl_xworks.color = C["text_muted"]
-
-    def _toggle_lunch(self, active):
-        self.lunch_box.collapse(active)
+    def _lunch(self, active):
+        self._toggle_panel("lunch", active)
+        if active and not self.f_lunch.input.text.strip():
+            self.f_lunch.input.text = self.app.db.get("default_lunch", "60")
         self.recalc()
 
-    def _toggle_extra(self, active):
-        self.extra_box.collapse(active)
+    def _set_lunch(self, v):
+        self.f_lunch.input.text = v
         self.recalc()
 
-    def _toggle_penalty(self, active):
+    def _penalty(self, active):
         self.penalty_box.collapse(active)
         self.recalc()
 
-    def _toggle_xfixed(self, active):
-        self.f_xrate.input.disabled = active
-        self.f_xfixed.input.disabled = not active
+    def _extra(self, active):
+        self._toggle_panel("extra", active)
+        if active and not self.f_xrate.input.text.strip():
+            self.f_xrate.input.text = self.app.db.get("extra_rate", "250")
         self.recalc()
 
-    def _set_lunch(self, mins):
-        self.f_lunch.input.text = str(mins)
+    # -- данные --
+    def _open_extra_works_editor(self, *_):
+        return self._open_works_editor("extra")
+
+    def _open_works_editor(self, target="works", *_):
+        """Open the shared native Android editor for either work description."""
+        if target not in ("works", "extra"):
+            target = "works"
+        try:
+            if self._works_locked() or getattr(self, "_editor_busy", False):
+                return
+        except Exception as ex:
+            self._editor_failed(str(ex))
+            return
+
+        self._editor_target = target
+        self._editor_date = self.app.current
+        current = (self._works_text if target == "works"
+                   else self._extra_works_text) or ""
+        title = ("Описание произведённых работ" if target == "works"
+                 else "Описание дополнительных работ")
+
+        # Release any Kivy text field focus before opening the Android window.
+        for widget in self.walk():
+            if isinstance(widget, TextInput):
+                widget.focus = False
+
+        if not os.environ.get("ANDROID_ARGUMENT"):
+            content = BoxLayout(orientation="vertical", spacing=dp(8),
+                                padding=[dp(10)] * 2)
+            inp = TextInput(text=current, hint_text=title, multiline=True,
+                            size_hint_y=None, height=dp(220),
+                            background_normal="", background_active="",
+                            background_color=C["white"], foreground_color=C["text"],
+                            font_name=FONT, font_size=sp(16), padding=[dp(8), dp(8)])
+            content.add_widget(inp)
+            popup = Popup(title=title, content=content, size_hint=(.95, None),
+                          height=dp(340))
+            row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
+
+            def save(*_):
+                self._accept_works_text(inp.text, target)
+                popup.dismiss()
+
+            row.add_widget(FlatButton("Сохранить", height=44, on_release=save))
+            row.add_widget(FlatButton("Отмена", bg=C["surface_alt"],
+                                      fg=C["text"], height=44,
+                                      on_release=lambda *_: popup.dismiss()))
+            content.add_widget(row)
+            popup.open()
+            return
+
+        self._editor_busy = True
+        try:
+            from native_editor import NativeEditor
+            if self._native_editor is None:
+                self._native_editor = NativeEditor()
+
+            def completed(status, value):
+                self._editor_busy = False
+                if status == "ok":
+                    self._accept_works_text(value, target)
+                elif status == "error":
+                    self._editor_failed(value)
+
+            if not self._native_editor.open(title, current, completed):
+                self._editor_busy = False
+        except Exception as ex:
+            self._editor_failed(str(ex))
+
+    def _works_locked(self):
+        return bool(self.app.db.load_day(self.app.current).approved_at or
+                    self.app.db.week_received(self.app.current))
+
+    def _editor_failed(self, message):
+        self._editor_busy = False
+        from kivy.logger import Logger
+        Logger.error("WorksEditor: " + message)
+        popup = Popup(title="Ошибка редактора", size_hint=(.95, .5),
+                      content=TLabel("Не удалось открыть редактор. " + message))
+        popup.open()
+
+    def _accept_works_text(self, value, target=None):
+        target = target or self._editor_target or "works"
+        if target not in ("works", "extra"):
+            target = "works"
+        if self.app.current != self._editor_date or self._works_locked():
+            toast("Дата или статус записи изменились", "warn")
+            return
+        if target == "extra":
+            self._set_extra_works_text(value)
+        else:
+            self._set_works_text(value)
+
+    def _set_works_text(self, value):
+        self._works_text = value or ""
+        self.lbl_works.text = (self._works_text if self._works_text.strip()
+                               else "что делал на работе…")
+        self.lbl_works.color = (C["text"] if self._works_text.strip()
+                                else C["text_muted"])
+        self.recalc()
+
+    def _set_extra_works_text(self, value):
+        self._extra_works_text = value or ""
+        self.lbl_xworks.text = (self._extra_works_text
+                                if self._extra_works_text.strip()
+                                else "описание доп. работ…")
+        self.lbl_xworks.color = (C["text"] if self._extra_works_text.strip()
+                                 else C["text_muted"])
+        self.recalc()
 
     def collect(self):
-        e = DayEntry(date=self.app.current.isoformat(),
-                     start=parse_time(self.f_start.input.text),
-                     end=parse_time(self.f_end.input.text),
-                     lunch_on=self.t_lunch.active,
-                     lunch_min=parse_duration(self.f_lunch.input.text),
-                     works=self._works_text,
-                     extra_on=self.t_extra.active,
-                     extra_start=parse_time(self.f_xstart.input.text),
-                     extra_end=parse_time(self.f_xend.input.text),
-                     extra_works=self._xworks_text,
-                     extra_rate=_f(self.f_xrate.input.text, 250),
-                     extra_fixed=_f(self.f_xfixed.input.text, 0),
-                     extra_use_fixed=self.t_xfixed.active,
-                     bonus=_f(self.f_bonus.input.text, 0),
-                     penalty_on=self.t_penalty.active,
-                     penalty=_f(self.f_penalty.input.text, 0),
-                     rate=self.app.db.get_float("rate", 250))
-        src = self._loaded_entry
-        if src is not None:
-            e.approved_at = getattr(src, "approved_at", "")
-            e.version = getattr(src, "version", 1)
-            e.sync_status = getattr(src, "sync_status", "local")
+        from dataclasses import replace
+        loaded = getattr(self, '_loaded_entry', None)
+        e = replace(loaded) if loaded and loaded.date == self.app.current.isoformat() else DayEntry(
+            date=self.app.current.isoformat(), rate=self.app.db.get_float('rate', 250))
+        e.start = parse_time(self.f_start.input.text)
+        e.end = parse_time(self.f_end.input.text)
+        e.lunch_on = self.t_lunch.get()
+        e.lunch_min = parse_duration(self.f_lunch.input.text) if e.lunch_on else 0
+        e.works = (self._works_text or '').strip()
+        e.extra_on = self.t_extra.get()
+        e.extra_start = parse_time(self.f_xstart.input.text)
+        e.extra_end = parse_time(self.f_xend.input.text)
+        e.extra_works = (self._extra_works_text or "").strip()
+        e.extra_use_fixed = self.t_xfixed.get()
+        e.extra_rate = _f(self.f_xrate.input.text, self.app.db.get_float("extra_rate", 250))
+        e.extra_fixed = _f(self.f_xfixed.input.text, 0)
+        e.bonus = _f(self.f_bonus.input.text, 0)
+        e.penalty_on = self.t_penalty.get()
+        e.penalty = _f(self.f_penalty.input.text, 0) if e.penalty_on else 0
+        # Editing the description must not recalculate old days at today's rate.
         return e
 
-    def recalc(self):
+    def recalc(self, *_):
         if self._loading:
             return
         e = self.collect()
-        self.r_hours.children[0].text = "Часов основных"
-        self._set_row(self.r_hours, fmt_hm(e.work_min))
-        self._set_row(self.r_xhours, fmt_hm(e.extra_min))
-        self._set_row(self.r_day, fmt_money(e.day_pay))
-        self._set_row(self.r_extra, fmt_money(e.extra_pay))
-        self._set_row(self.r_bonus, fmt_money(e.bonus))
-        self._set_row(self.r_penalty,
-                      "-" + fmt_money(e.penalty_pay) if e.penalty_pay else fmt_money(0))
-        self._set_row(self.r_total, fmt_money(e.total_pay))
-
-    @staticmethod
-    def _set_row(row, value):
-        row.children[0].text = value
+        self.r_hours.value.text = fmt_hm(e.work_min)
+        self.r_xhours.value.text = fmt_hm(e.extra_min)
+        self.r_pay.value.text = fmt_money(e.day_pay)
+        self.r_xpay.value.text = fmt_money(e.extra_pay)
+        self.r_bonus.value.text = fmt_money(e.bonus)
+        self.r_penalty.value.text = "-" + fmt_money(e.penalty) if e.penalty else fmt_money(0)
+        self.r_total.value.text = fmt_money(e.total_pay)
 
     def load(self, d):
         self._loading = True
@@ -551,43 +655,53 @@ class DayScreen(Screen):
         e = self.app.db.load_day(d)
         self._loaded_entry = e
         self.l_wd.text = WEEKDAYS_RU[d.weekday()]
-        self.l_dt.text = "%02d.%02d.%d • %s" % (d.day, d.month, d.year, week_title(d))
+        self.l_dt.text = "%02d.%02d.%d   •   %s" % (d.day, d.month, d.year,
+                                                    week_title(d))
         self.f_start.input.text = fmt_time(e.start) if e.start is not None else ""
         self.f_end.input.text = fmt_time(e.end) if e.end is not None else ""
         self.t_lunch.set(e.lunch_on)
-        self.lunch_box.collapse(e.lunch_on)
+        self._toggle_panel("lunch", e.lunch_on)
         self.f_lunch.input.text = str(e.lunch_min or "")
-        self._set_works(e.works)
+        self._works_text = e.works or ''
+        self.lbl_works.text = e.works if e.works else 'что делал на работе…'
+        self.lbl_works.color = C['text'] if e.works else C['text_muted']
         self.t_extra.set(e.extra_on)
-        self.extra_box.collapse(e.extra_on)
+        self._toggle_panel("extra", e.extra_on)
         self.f_xstart.input.text = fmt_time(e.extra_start) if e.extra_start is not None else ""
         self.f_xend.input.text = fmt_time(e.extra_end) if e.extra_end is not None else ""
         self.f_xrate.input.text = _num(e.extra_rate)
         self.t_xfixed.set(e.extra_use_fixed)
         self.f_xfixed.input.text = _num(e.extra_fixed) if e.extra_fixed else ""
-        self._set_xworks(e.extra_works)
+        self._set_extra_works_text(e.extra_works)
         self.f_bonus.input.text = _num(e.bonus) if e.bonus else ""
         self.t_penalty.set(e.penalty_on)
         self.penalty_box.collapse(e.penalty_on)
         self.f_penalty.input.text = _num(e.penalty) if e.penalty else ""
         self._loading = False
-        self._set_locked(bool(getattr(e, "approved_at", "")) or
-                         self.app.db.week_received(d))
+        self._set_locked(bool(e.approved_at) or self.app.db.week_received(d))
         self.recalc()
 
     def _set_locked(self, locked):
         controls = (self.f_start.input, self.f_end.input, self.f_lunch.input,
-                    self.f_xstart.input, self.f_xend.input, self.f_xrate.input,
-                    self.f_xfixed.input, self.f_bonus.input, self.f_penalty.input)
+                    self.f_xstart.input, self.f_xend.input,
+                    self.f_xrate.input, self.f_xfixed.input,
+                    self.f_bonus.input, self.f_penalty.input)
+        self.lbl_works.disabled = locked
         self.btn_works.disabled = locked
+        self.lbl_xworks.disabled = locked
         self.btn_xworks.disabled = locked
-        for w in controls:
-            w.disabled = locked
-        for w in (self.t_lunch, self.t_extra, self.t_xfixed, self.t_penalty):
-            w.disabled = locked
+        for w in controls: w.disabled = locked
+        for w in (self.t_lunch, self.t_extra, self.t_xfixed, self.t_penalty): w.disabled = locked
+        if hasattr(self, "penalty_box"):
+            self.penalty_box.disabled = locked or not self.t_penalty.get()
 
     def shift(self, n):
         self.load(self.app.current + dt.timedelta(days=n))
+
+    def defaults(self):
+        self.f_start.input.text = self.app.db.get("default_start", "8:00")
+        self.f_end.input.text = self.app.db.get("default_end", "17:00")
+        self.recalc()
 
     def save(self):
         e = self.collect()
@@ -595,35 +709,44 @@ class DayScreen(Screen):
             toast("Укажите время окончания работы", "warn")
             return
         saved = self.app.db.load_day(self.app.current)
-        if getattr(saved, "approved_at", "") or self.app.db.week_received(self.app.current):
+        if saved.approved_at or self.app.db.week_received(self.app.current):
             toast("Эта запись уже закрыта", "warn")
             return
-        new_version = self.app.db.increment_day_version(self.app.current)
-        e.version = new_version
+        
+        # Сохраняем состояние синхронизации
+        e.approved_at = saved.approved_at
+        e.version = self.app.db.increment_day_version(self.app.current)
         e.sync_status = "local"
+        
         self.app.db.save_day(e)
-        self._loaded_entry = e
         toast("Сохранено: %s" % fmt_money(e.total_pay))
+        
+        # Отправляем обновление на сервер
         self._send_day_updated(e)
 
     def _send_day_updated(self, e):
+        """Отправляет day_updated на сервер если устройство привязано."""
         if not (SYNC_AVAILABLE and self.app.sync_client):
             return
         emp_id = self.app.db.get("employee_id", "")
-        emp_token = self.app.db.get("employee_token", "")
+        emp_token = self.app.db.get("employee_token", "") or self.app.db.get("secret_key", "")
         if not (emp_id and emp_token):
             return
+        payload = e.to_dict()
+        for k in ("version", "sync_status", "approved_at"):
+            payload.pop(k, None)
         self.app.sync_client.send_async("day_updated", emp_id, emp_token,
-                                        e.date, _sync_payload(e), e.version)
+                                        e.date, payload, e.version)
 
     def clear(self):
         saved = self.app.db.load_day(self.app.current)
-        if getattr(saved, "approved_at", "") or self.app.db.week_received(self.app.current):
+        if saved.approved_at or self.app.db.week_received(self.app.current):
             toast("Эта запись уже закрыта", "warn")
             return
         self.app.db.delete_day(self.app.current)
         self.load(self.app.current)
         toast("Запись удалена", "warn")
+
 
 # ---------------------------------------------------------------- экран НЕДЕЛЯ
 class WeekScreen(Screen):
@@ -632,6 +755,7 @@ class WeekScreen(Screen):
         self.app = app
         root = BoxLayout(orientation="vertical")
         self.add_widget(root)
+
         nav = BoxLayout(size_hint_y=None, height=dp(54), padding=[dp(8), dp(5)],
                         spacing=dp(6))
         with nav.canvas.before:
@@ -641,14 +765,15 @@ class WeekScreen(Screen):
                  size=lambda *a: setattr(nr, "size", nav.size))
         nav.add_widget(FlatButton("<", bg=C["accent_dark"], height=44, size=18,
                                   size_hint_x=None, width=dp(50),
-                                  on_release=lambda _b: self.shift(-1)))
+                                  on_release=lambda *_: self.shift(-1)))
         self.l_title = TLabel("", size=15, font=FONTB, color=C["accent_dark"],
                               halign="center", height=dp(44))
         nav.add_widget(self.l_title)
         nav.add_widget(FlatButton(">", bg=C["accent_dark"], height=44, size=18,
                                   size_hint_x=None, width=dp(50),
-                                  on_release=lambda _b: self.shift(1)))
+                                  on_release=lambda *_: self.shift(1)))
         root.add_widget(nav)
+
         sc = ScrollView(do_scroll_x=False)
         self.body = BoxLayout(orientation="vertical", size_hint_y=None,
                               padding=[dp(10), dp(10)], spacing=dp(8))
@@ -668,50 +793,44 @@ class WeekScreen(Screen):
         today = dt.date.today()
         for e in days:
             dd = e.date_obj
-            bg = (C["accent_light"] if dd == today else
-                  C["surface_alt"] if dd.weekday() >= 5 else C["surface"])
+            bg = C["accent_light"] if dd == today else (
+                C["surface_alt"] if dd.weekday() >= 5 else C["surface"])
             card = Card(bg=bg, radius=12, padding=[dp(12), dp(10)], spacing=dp(3))
-            h = BoxLayout(size_hint_y=None, height=dp(24))
-            h.add_widget(TLabel("%s, %02d.%02d" % (WEEKDAYS_RU[dd.weekday()],
-                                                   dd.day, dd.month),
-                                size=15, font=FONTB, height=dp(24)))
-            h.add_widget(TLabel(fmt_money(e.total_pay) if not e.is_empty else "—",
-                                size=15, font=FONTB, halign="right",
-                                color=C["ok"] if not e.is_empty else C["text_muted"],
-                                height=dp(24)))
-            card.add_widget(h)
+            head = BoxLayout(size_hint_y=None, height=dp(24))
+            head.add_widget(TLabel("%s, %02d.%02d" % (WEEKDAYS_RU[dd.weekday()],
+                                                      dd.day, dd.month),
+                                   size=15, font=FONTB, height=dp(24)))
+            head.add_widget(TLabel(fmt_money(e.total_pay) if not e.is_empty else "—",
+                                   size=15, font=FONTB, halign="right",
+                                   color=C["ok"] if not e.is_empty else C["text_muted"],
+                                   height=dp(24)))
+            card.add_widget(head)
             if not e.is_empty:
-                approved = bool(getattr(e, "approved_at", ""))
-                card.add_widget(TLabel("✓ Одобрено" if approved else "Ожидает одобрения",
-                                       size=13, font=FONTB,
-                                       color=C["ok"] if approved else C["warn"],
-                                       height=dp(22)))
-                s = ""
-                if e.start is not None and e.end is not None:
-                    s = "%s — %s" % (fmt_time(e.start), fmt_time(e.end))
+                status = "✓ Одобрено" if e.approved_at else "Ожидает одобрения"
+                status_color = C["ok"] if e.approved_at else C["warn"]
+                card.add_widget(TLabel(status, size=13, font=FONTB, color=status_color, height=dp(22)))
+                s = "%s — %s" % (fmt_time(e.start), fmt_time(e.end)) \
+                    if e.start is not None and e.end is not None else ""
                 if e.lunch_on and e.lunch_min:
-                    s += " (обед %d мин)" % e.lunch_min
-                if s:
-                    s += " ⟶ %s" % fmt_hm_short(e.work_min)
-                    card.add_widget(TLabel(s, size=13, color=C["text_muted"]))
+                    s += "  (обед %d мин)" % e.lunch_min
+                s += "   ⟶  %s" % fmt_hm_short(e.work_min)
+                card.add_widget(TLabel(s, size=13, color=C["text_muted"]))
                 if e.extra_min or e.extra_pay:
-                    card.add_widget(TLabel("доп.: %s • %s" %
-                                           (fmt_hm_short(e.extra_min),
-                                            fmt_money(e.extra_pay)),
-                                           size=13, color=C["warn"]))
-                if e.penalty_pay:
-                    card.add_widget(TLabel("штраф: -%s" % fmt_money(e.penalty_pay),
-                                           size=13, color=C["danger"]))
+                    card.add_widget(TLabel(
+                        "доп.: %s  •  %s" % (fmt_hm_short(e.extra_min),
+                                             fmt_money(e.extra_pay)),
+                        size=13, color=C["warn"]))
+                if e.penalty:
+                    card.add_widget(TLabel("штраф: -%s" % fmt_money(e.penalty), size=13, color=C["danger"]))
                 if e.bonus:
                     card.add_widget(TLabel("премия: %s" % fmt_money(e.bonus),
                                            size=13, color=C["accent_dark"]))
                 if e.works:
                     card.add_widget(TLabel(e.works, size=13))
-            card.add_widget(FlatButton("просмотр" if getattr(e, "approved_at", "")
-                                       else "открыть", bg=C["surface_alt"],
-                                       fg=C["accent_dark"], height=34, size=12,
-                                       font=FONT,
-                                       on_release=lambda _b, x=dd: self.app.open_day(x)))
+            btn = FlatButton("просмотр" if e.approved_at else "открыть", bg=C["surface_alt"], fg=C["accent_dark"],
+                             height=34, size=12, font=FONT,
+                             on_release=lambda _b, x=dd: self.app.open_day(x))
+            card.add_widget(btn)
             self.body.add_widget(card)
 
         t = Totals(days)
@@ -722,50 +841,44 @@ class WeekScreen(Screen):
         tot.add_widget(Row("Оплата за дни", fmt_money(t.day_pay)))
         tot.add_widget(Row("Доп. работы", fmt_money(t.extra_pay)))
         tot.add_widget(Row("Премия", fmt_money(t.bonus)))
-        tot.add_widget(Row("Штрафы",
-                           "-" + fmt_money(t.penalty) if t.penalty else fmt_money(0)))
+        tot.add_widget(Row("Штрафы", "-" + fmt_money(t.penalty) if t.penalty else fmt_money(0)))
         r = Row("К ВЫПЛАТЕ", fmt_money(t.total_pay), bold=True, size=20, color=C["ok"])
         r.height = dp(36)
         tot.add_widget(r)
         self.body.add_widget(tot)
         self.body.add_widget(FlatButton("Поделиться отчётом за неделю",
-                                        on_release=lambda _b: self.app.share_week()))
-
-        pay = Card("Сумма получена", bg=C["surface_alt"], radius=10)
+                                        on_release=lambda *_: self.app.share_week()))
+        self.payment_box = Card("Сумма получена", bg=C["surface_alt"], radius=10)
         self.payment_status = TLabel("", size=13, color=C["text_muted"])
-        pay.add_widget(self.payment_status)
+        self.payment_box.add_widget(self.payment_status)
         self.f_received = field("Дата получения", "дд.мм.гггг")
-        self.f_received.input.bind(text=lambda *_: self._received_changed())
-        pay.add_widget(self.f_received)
+        self.f_received.input.bind(text=lambda *_: self._received_date_changed())
+        self.payment_box.add_widget(self.f_received)
         self.received_toggle = Toggle("Получил", self._received_toggle)
-        pay.add_widget(self.received_toggle)
-
+        self.payment_box.add_widget(self.received_toggle)
         complete = self.app.db.week_complete(d)
         closed = self.app.db.week_received(d)
-        self.payment_status.text = (
-            "✓ Неделя закрыта окончательно" if closed else
-            "Все заполненные дни одобрены" if complete else
-            "Дата станет доступна после одобрения всех заполненных дней")
-        self.f_received.input.text = self.app.db.received_on(d) if complete else ""
+        self.payment_status.text = ("✓ Неделя закрыта окончательно" if closed else
+                                    "Все заполненные дни одобрены" if complete else
+                                    "Дата станет доступна после одобрения всех заполненных дней")
+        received_on = self.app.db.received_on(d) if complete else ""
+        self.f_received.input.text = received_on
         self.f_received.disabled = not complete or closed
-        self.received_toggle.disabled = (not complete or closed
-                                         or not self.f_received.input.text.strip())
+        self.received_toggle.disabled = not complete or closed or not received_on.strip()
         self.received_toggle.set(closed)
-        self.body.add_widget(pay)
+        self.body.add_widget(self.payment_box)
         self.body.add_widget(TLabel("", height=dp(8)))
 
-    def _received_changed(self):
+    def _received_date_changed(self):
         if hasattr(self, "received_toggle"):
-            self.received_toggle.disabled = (
-                not self.app.db.week_complete(self.app.current)
-                or self.app.db.week_received(self.app.current)
-                or not self.f_received.input.text.strip())
+            closed = self.app.db.week_received(self.app.current)
+            self.received_toggle.disabled = (not self.app.db.week_complete(self.app.current)
+                                             or closed or not self.f_received.input.text.strip())
 
     def _received_toggle(self, active):
         if not active:
             return
-        d = self.app.current
-        if not self.app.db.week_complete(d):
+        if not self.app.db.week_complete(self.app.current):
             self.received_toggle.set(False)
             toast("Сначала начальник должен одобрить все заполненные дни", "warn")
             return
@@ -776,21 +889,23 @@ class WeekScreen(Screen):
             self.received_toggle.set(False)
             toast("Введите дату в формате ДД.ММ.ГГГГ", "warn")
             return
-        version = self.app.db.increment_week_version(d)
-        self.app.db.set_received(d, got.isoformat())
+        
+        version = self.app.db.increment_week_version(self.app.current)
+        self.app.db.set_received(self.app.current, got.isoformat())
         self.refresh()
         toast("Неделя окончательно закрыта", "ok")
+        
+        # Отправляем подтверждение на сервер
         if SYNC_AVAILABLE and self.app.sync_client:
             emp_id = self.app.db.get("employee_id", "")
-            emp_token = self.app.db.get("employee_token", "")
+            emp_token = self.app.db.get("employee_token", "") or self.app.db.get("secret_key", "")
             if emp_id and emp_token:
+                monday = week_start(self.app.current).isoformat()
                 self.app.sync_client.send_async(
-                    "payment_received", emp_id, emp_token,
-                    week_start(d).isoformat(),
-                    {"week_id": week_start(d).isoformat(),
-                     "payment_date": got.isoformat(),
-                     "payment_confirmed": True},
-                    version)
+                    "payment_received", emp_id, emp_token, monday,
+                    {"week_id": monday, "payment_date": got.isoformat(),
+                     "payment_confirmed": True}, version)
+
 
 # --------------------------------------------------------------- экран ИСТОРИЯ
 class HistoryScreen(Screen):
@@ -800,6 +915,7 @@ class HistoryScreen(Screen):
         self.anchor = dt.date.today().replace(day=1)
         root = BoxLayout(orientation="vertical")
         self.add_widget(root)
+
         nav = BoxLayout(size_hint_y=None, height=dp(54), padding=[dp(8), dp(5)],
                         spacing=dp(6))
         with nav.canvas.before:
@@ -809,14 +925,15 @@ class HistoryScreen(Screen):
                  size=lambda *a: setattr(nr, "size", nav.size))
         nav.add_widget(FlatButton("<", bg=C["accent_dark"], height=44, size=18,
                                   size_hint_x=None, width=dp(50),
-                                  on_release=lambda _b: self.shift(-1)))
+                                  on_release=lambda *_: self.shift(-1)))
         self.l_title = TLabel("", size=16, font=FONTB, color=C["accent_dark"],
                               halign="center", height=dp(44))
         nav.add_widget(self.l_title)
         nav.add_widget(FlatButton(">", bg=C["accent_dark"], height=44, size=18,
                                   size_hint_x=None, width=dp(50),
-                                  on_release=lambda _b: self.shift(1)))
+                                  on_release=lambda *_: self.shift(1)))
         root.add_widget(nav)
+
         sc = ScrollView(do_scroll_x=False)
         self.body = BoxLayout(orientation="vertical", size_hint_y=None,
                               padding=[dp(10), dp(10)], spacing=dp(6))
@@ -843,8 +960,8 @@ class HistoryScreen(Screen):
                 h.add_widget(TLabel("%02d.%02d %s" % (dd.day, dd.month,
                                                       WEEKDAYS_RU_SHORT[dd.weekday()]),
                                     size=14, font=FONTB, height=dp(22)))
-                h.add_widget(TLabel("%s • %s" % (fmt_hm_short(e.total_min),
-                                                 fmt_money(e.total_pay)),
+                h.add_widget(TLabel("%s  •  %s" % (fmt_hm_short(e.total_min),
+                                                   fmt_money(e.total_pay)),
                                     size=14, font=FONTB, halign="right",
                                     color=C["ok"], height=dp(22)))
                 card.add_widget(h)
@@ -855,7 +972,7 @@ class HistoryScreen(Screen):
                                            font=FONT,
                                            on_release=lambda _b, x=dd: self.app.open_day(x)))
                 self.body.add_widget(card)
-                wk.append(e)
+            wk.append(e)
             if dd.weekday() == 6 or dd == days[-1].date_obj:
                 t = Totals(wk)
                 if t.worked_days:
@@ -874,15 +991,14 @@ class HistoryScreen(Screen):
         tot.add_widget(Row("Оплата за дни", fmt_money(mt.day_pay)))
         tot.add_widget(Row("Доп. работы", fmt_money(mt.extra_pay)))
         tot.add_widget(Row("Премии", fmt_money(mt.bonus)))
-        tot.add_widget(Row("Штрафы",
-                           "-" + fmt_money(mt.penalty) if mt.penalty else fmt_money(0)))
         r = Row("ВСЕГО", fmt_money(mt.total_pay), bold=True, size=20, color=C["ok"])
         r.height = dp(36)
         tot.add_widget(r)
         self.body.add_widget(tot)
         self.body.add_widget(FlatButton("Поделиться отчётом за месяц",
-                                        on_release=lambda _b: self.app.share_month(self.anchor)))
+                                        on_release=lambda *_: self.app.share_month(self.anchor)))
         self.body.add_widget(TLabel("", height=dp(8)))
+
 
 # ------------------------------------------------------------- экран НАСТРОЙКИ
 class SettingsScreen(Screen):
@@ -918,35 +1034,51 @@ class SettingsScreen(Screen):
         c3.add_widget(self.f_org)
         body.add_widget(c3)
 
-        c_sync = Card("Синхронизация с Windows")
+        c_sync = Card("Синхронизация с Windows", bg=hexc("#E3EDF7"))
         self.f_key = field("Секретный ключ сотрудника (employee_token)", "")
         c_sync.add_widget(self.f_key)
-        self.f_emp_id = field("employee_id (заполнится после привязки)", "")
+        self.f_emp_id = field("employee_id (заполнится автоматически)", "")
         self.f_emp_id.input.disabled = True
         c_sync.add_widget(self.f_emp_id)
+        
+        self.f_restore_name = field("ФИО (для восстановления аккаунта)", "")
+        self.f_restore_birth = field("Дата рождения (ДД.ММ.ГГГГ)", "")
+        c_sync.add_widget(self.f_restore_name)
+        c_sync.add_widget(self.f_restore_birth)
+        
         self.lbl_sync = TLabel("", size=12, color=C["text_muted"])
         c_sync.add_widget(self.lbl_sync)
-        self.btn_bind = FlatButton("ПРИВЯЗАТЬ УСТРОЙСТВО", height=50,
-                                   on_release=lambda _b: self.bind_device())
-        c_sync.add_widget(self.btn_bind)
+        
+        sync_btns = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
+        self.btn_bind = FlatButton("ПРИВЯЗАТЬ", bg=C["accent_light"],
+                                    fg=C["accent_dark"], height=50, size=13,
+                                    on_release=lambda _b: self.bind_device())
+        self.btn_restore = FlatButton("ВОССТАНОВИТЬ АККАУНТ", bg=C["warn"],
+                                       height=50, size=13,
+                                       on_release=lambda _b: self.restore_account())
+        sync_btns.add_widget(self.btn_bind)
+        sync_btns.add_widget(self.btn_restore)
+        c_sync.add_widget(sync_btns)
+        
         body.add_widget(c_sync)
 
         body.add_widget(FlatButton("СОХРАНИТЬ НАСТРОЙКИ", height=54,
-                                   on_release=lambda _b: self.save()))
-
+                                   on_release=lambda *_: self.save()))
         c4 = Card("Данные")
         c4.add_widget(TLabel("База: " + self.app.db.path, size=11,
                              color=C["text_muted"]))
         c4.add_widget(FlatButton("Создать резервную копию", bg=C["surface_alt"],
                                  fg=C["text"], font=FONT, height=46,
-                                 on_release=lambda _b: self.backup()))
-        c4.add_widget(FlatButton("Восстановить из резервной копии",
-                                 bg=C["surface_alt"], fg=C["text"], font=FONT,
-                                 height=52, size=13,
-                                 on_release=lambda _b: self.app.restore_controller.open()))
+                                 on_release=lambda *_: self.backup()))
+        self.btn_restore_backup = FlatButton("Восстановить из резервной копии", bg=C["surface_alt"],
+                                     fg=C["text"], font=FONT, height=52, size=13,
+                                     on_release=lambda *_: self.app.restore_controller.open())
+        c4.add_widget(self.btn_restore_backup)
         body.add_widget(c4)
-        body.add_widget(TLabel("Табель 2.0 • учёт рабочего времени и выплат\nверсия 2.0.0",
+        body.add_widget(TLabel("Табель 2.0  •  учёт рабочего времени и выплат\nверсия 2.0.0",
                                size=12, color=C["text_muted"], halign="center"))
+        body.add_widget(TLabel("С серверной синхронизацией", size=12,
+                               color=C["accent_dark"], halign="center"))
         self.load()
 
     def load(self):
@@ -962,8 +1094,9 @@ class SettingsScreen(Screen):
         self.f_emp_id.input.text = db.get("employee_id", "")
         emp_id = db.get("employee_id", "")
         if SYNC_AVAILABLE and self.app.sync_client:
-            self.lbl_sync.text = ("ID устройства: " + self.app.sync_client.device_id[:8] +
-                                  "…\nСтатус: " + ("привязано" if emp_id else "не привязано"))
+            status = "привязано" if emp_id else "не привязано"
+            self.lbl_sync.text = ("ID устройства: %s…\nСтатус: %s"
+                                   % (self.app.sync_client.device_id[:8], status))
         else:
             self.lbl_sync.text = "Синхронизация недоступна в этой сборке"
 
@@ -975,11 +1108,13 @@ class SettingsScreen(Screen):
         db.set("default_end", self.f_de.input.text or "17:00")
         db.set("default_lunch", self.f_dl.input.text or "60")
         db.set("employee", self.f_emp.input.text)
+        db.set("secret_key", self.f_key.input.text)
+        db.set("employee_id", self.f_emp_id.input.text)
         db.set("organization", self.f_org.input.text)
-        db.set("secret_key", self.f_key.input.text.strip())
         toast("Настройки сохранены")
 
     def bind_device(self):
+        """Сценарий 2: привязка нового Android к существующему аккаунту Windows."""
         if not (SYNC_AVAILABLE and self.app.sync_client):
             toast("Синхронизация недоступна", "warn")
             return
@@ -988,11 +1123,13 @@ class SettingsScreen(Screen):
             toast("Введите секретный ключ сотрудника", "warn")
             return
         self.btn_bind.disabled = True
-        self.lbl_sync.text = "Привязка… подождите"
+        self.btn_restore.disabled = True
+        self.lbl_sync.text = "Привязка устройства…"
 
         def callback(result):
             def apply():
                 self.btn_bind.disabled = False
+                self.btn_restore.disabled = False
                 if result.get("ok") and result.get("status") in ("linked", "already_linked"):
                     emp_id = result.get("employee_id", "")
                     emp_token = result.get("employee_token", token)
@@ -1001,24 +1138,121 @@ class SettingsScreen(Screen):
                     self.app.db.set("secret_key", emp_token)
                     self.app.sync_client.set_credentials(emp_id, emp_token)
                     self.load()
-                    toast("Устройство привязано", "ok")
+                    toast("✓ Устройство привязано", "ok")
                 else:
-                    self.lbl_sync.text = "Ошибка: " + str(result.get("error", "неизвестно"))
-                    toast("Привязка не удалась: " + str(result.get("error", "")), "warn")
+                    self.lbl_sync.text = "Ошибка: %s" % result.get("error", "неизвестно")
+                    toast("Привязка не удалась", "warn")
             Clock.schedule_once(lambda *_: apply(), 0)
 
         self.app.sync_client.send_async("bind_device", token, callback=callback)
 
+    def restore_account(self):
+        """Сценарий 3: восстановление полной истории на новом устройстве."""
+        if not (SYNC_AVAILABLE and self.app.sync_client):
+            toast("Синхронизация недоступна", "warn")
+            return
+        name = self.f_restore_name.input.text.strip()
+        birth_raw = self.f_restore_birth.input.text.strip()
+        if not name or not birth_raw:
+            toast("Введите ФИО и дату рождения", "warn")
+            return
+        try:
+            birth_date = dt.datetime.strptime(birth_raw, "%d.%m.%Y").date()
+            birth_iso = birth_date.isoformat()
+        except ValueError:
+            toast("Введите дату в формате ДД.ММ.ГГГГ", "warn")
+            return
+
+        self.btn_bind.disabled = True
+        self.btn_restore.disabled = True
+        self.lbl_sync.text = "Восстановление аккаунта…"
+
+        def callback(result):
+            def apply():
+                self.btn_bind.disabled = False
+                self.btn_restore.disabled = False
+                if not (result.get("ok") and result.get("status") == "restored"):
+                    self.lbl_sync.text = "Ошибка: %s" % result.get("error", "неизвестно")
+                    toast("Восстановление не удалось: %s" % result.get("error", ""), "warn")
+                    return
+                self._import_server_state(result)
+            Clock.schedule_once(lambda *_: apply(), 0)
+
+        self.app.sync_client.send_async("restore_account", name, birth_iso, callback=callback)
+
+    def _import_server_state(self, result):
+        """Импортирует timesheet_state и payment_state в локальную БД."""
+        emp_id = result.get("employee_id", "")
+        emp_token = result.get("employee_token", "")
+        self.app.db.set("employee_id", emp_id)
+        self.app.db.set("employee_token", emp_token)
+        self.app.db.set("secret_key", emp_token)
+        self.app.sync_client.set_credentials(emp_id, emp_token)
+
+        days_imported = 0
+        for item in result.get("timesheet_state", []):
+            date = item.get("date", "")
+            version = int(item.get("version", 1) or 1)
+            payload = item.get("payload", {}) or {}
+            entry_data = payload.get("entry", {}) or {}
+            if not date or not entry_data:
+                continue
+            # Не перезаписываем уже одобренные локальные записи более старыми версиями
+            existing = self.app.db.load_day(date)
+            if existing and getattr(existing, "version", 1) >= version:
+                continue
+            try:
+                entry_data["date"] = date
+                entry_data["version"] = version
+                entry_data["sync_status"] = "synced"
+                entry_data.setdefault("lunch_on", False)
+                entry_data.setdefault("extra_on", False)
+                entry_data.setdefault("extra_use_fixed", False)
+                entry_data.setdefault("penalty_on", False)
+                e = DayEntry(**entry_data)
+                self.app.db.save_day(e)
+                days_imported += 1
+            except Exception:
+                continue
+
+        weeks_imported = 0
+        for item in result.get("payment_state", []):
+            week_id = item.get("week_id", "")
+            payment_date = item.get("payment_date", "")
+            payment_confirmed = bool(item.get("payment_confirmed"))
+            if not week_id or not payment_confirmed or not payment_date:
+                continue
+            try:
+                monday = dt.date.fromisoformat(week_id)
+                if not self.app.db.week_received(monday):
+                    self.app.db.set_received(monday, payment_date)
+                    weeks_imported += 1
+            except Exception:
+                continue
+
+        self.load()
+        try:
+            self.app.s_day.load(self.app.current)
+            self.app.s_week.refresh()
+            self.app.s_hist.refresh()
+        except Exception:
+            pass
+        self.lbl_sync.text = ("Импортировано: %d дней, %d закрытых недель"
+                               % (days_imported, weeks_imported))
+        toast("Аккаунт восстановлен: %d дней" % days_imported, "ok")
+
     def backup(self):
-        p = os.path.join(self.app.data_dir,
-                         "tabel_backup_%s.json" %
-                         dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
-        if getattr(self.app, "_restoring", False) or self.app._backup_pending_path:
+        """Save JSON through Android's system document picker."""
+        p = os.path.join(
+            self.app.data_dir,
+            "tabel_backup_%s.json" % dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f"),
+        )
+        if getattr(self.app, '_restoring', False) or self.app._backup_pending_path:
             return
         try:
             self.app.db.export_json(p)
         except Exception as ex:
-            self.app._popup("Ошибка резервной копии", str(ex))
+            self.app._popup('Ошибка резервной копии', str(ex))
             return
         if android_activity is None or not os.environ.get("ANDROID_ARGUMENT"):
             toast("Копия создана: " + p, "ok")
@@ -1027,6 +1261,7 @@ class SettingsScreen(Screen):
             self.app.begin_backup_save(p)
         except Exception as ex:
             toast("Не удалось открыть окно сохранения: %s" % ex, "warn")
+
 
 # ---------------------------------------------------------------- приложение
 class TabelApp(App):
@@ -1040,25 +1275,32 @@ class TabelApp(App):
         self._backup_pending_path = None
         self._backup_result_bound = False
         self._restoring = False
-        self._stopping = False
-
         from restore_ui import RestoreController
         self.restore_controller = RestoreController(self)
-
+        
+        # === ИНИЦИАЛИЗАЦИЯ СИНХРОНИЗАЦИИ ===
         self.sync_client = None
         self.sync_event = None
+        
         if SYNC_AVAILABLE:
             device_id_file = os.path.join(self.data_dir, "device_id.txt")
             self.sync_client = SyncClient(SYNC_API_URL, SYNC_API_TOKEN, device_id_file)
+            
+            # Загружаем credentials из БД
             emp_id = self.db.get("employee_id", "")
-            emp_token = self.db.get("employee_token", "")
+            emp_token = self.db.get("employee_token", "") or self.db.get("secret_key", "")
             if emp_id and emp_token:
                 self.sync_client.set_credentials(emp_id, emp_token)
+            
+            # Запускаем фоновую синхронизацию каждые 30 секунд
             self.sync_event = Clock.schedule_interval(self._poll_sync, 30)
             Clock.schedule_once(lambda *_: self._poll_sync(0), 3)
-
+        
         Window.clearcolor = C["bg"]
+
         root = BoxLayout(orientation="vertical")
+
+        # шапка
         head = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(64),
                          padding=[dp(16), dp(8)])
         with head.canvas.before:
@@ -1069,8 +1311,7 @@ class TabelApp(App):
         head.add_widget(TLabel("ТАБЕЛЬ 2.0", size=20, font=FONTB, color=C["white"],
                                height=dp(28)))
         today = dt.date.today()
-        head.add_widget(TLabel("%s, %d %s %d" % (WEEKDAYS_RU[today.weekday()],
-                                                 today.day,
+        head.add_widget(TLabel("%s, %d %s %d" % (WEEKDAYS_RU[today.weekday()], today.day,
                                                  MONTHS_RU[today.month - 1].lower(),
                                                  today.year),
                                size=12, color=hexc("#DCEBF8"), height=dp(20)))
@@ -1085,13 +1326,14 @@ class TabelApp(App):
             self.sm.add_widget(s)
         root.add_widget(self.sm)
 
+        # нижняя навигация
         nav = BoxLayout(size_hint_y=None, height=dp(58), spacing=dp(2),
                         padding=[dp(4), dp(4)])
         with nav.canvas.before:
             Color(*C["surface"])
             nr = Rectangle()
-        Color(*C["border"])
-        nl = Line(width=1)
+            Color(*C["border"])
+            nl = Line(width=1)
         nav.bind(pos=lambda *a: (setattr(nr, "pos", nav.pos),
                                  setattr(nl, "points", [nav.x, nav.top,
                                                         nav.right, nav.top])),
@@ -1113,27 +1355,29 @@ class TabelApp(App):
         return root
 
     def _poll_sync(self, _dt):
-        """Опрос очереди сервера. Android получает только day_approved."""
+        """Фоновая синхронизация - получение команд из очереди."""
         if not (SYNC_AVAILABLE and self.sync_client):
             return
-        if not (self.db.get("employee_id", "") and self.db.get("employee_token", "")):
+        if not (self.db.get("employee_id", "") and
+                (self.db.get("employee_token", "") or self.db.get("secret_key", ""))):
             return
 
         def process(result):
             if not result.get("ok"):
                 return
             for item in result.get("items", []):
-                command = item.get("command")
+                if item.get("command") != "day_approved":
+                    continue
                 payload = item.get("payload", {}) or {}
-                if command == "day_approved":
-                    date = payload.get("date", "")
-                    if date and not self.db.is_approved(date):
-                        self.db.mark_approved(date)
-                        Clock.schedule_once(lambda *_: self._refresh_ui(), 0)
+                date = payload.get("date", "")
+                if date and not self.db.is_approved(date):
+                    self.db.mark_approved(date)
+                    Clock.schedule_once(lambda *_: self._refresh_ui(), 0)
 
         self.sync_client.send_async("poll_commands", callback=process)
 
     def _refresh_ui(self):
+        """Обновляет UI после получения команды синхронизации."""
         cur = self.sm.current
         if cur == "day":
             self.s_day.load(self.current)
@@ -1162,6 +1406,7 @@ class TabelApp(App):
         self.s_day.load(d)
         self.go("day")
 
+    # -- «поделиться» текстовым отчётом --
     def _share(self, text):
         try:
             from jnius import autoclass, cast
@@ -1171,11 +1416,11 @@ class TabelApp(App):
             intent = Intent()
             intent.setAction(Intent.ACTION_SEND)
             intent.setType("text/plain")
-            intent.putExtra(Intent.EXTRA_TEXT,
-                            cast("java.lang.CharSequence", String(text)))
-            PythonActivity.mActivity.startActivity(
-                Intent.createChooser(intent, cast("java.lang.CharSequence",
-                                                  String("Отправить отчёт"))))
+            intent.putExtra(Intent.EXTRA_TEXT, cast("java.lang.CharSequence",
+                                                    String(text)))
+            act = PythonActivity.mActivity
+            act.startActivity(Intent.createChooser(intent, cast(
+                "java.lang.CharSequence", String("Отправить отчёт"))))
         except Exception:
             p = os.path.join(self.data_dir, "otchet.txt")
             with open(p, "w", encoding="utf-8") as f:
@@ -1185,6 +1430,7 @@ class TabelApp(App):
     def _popup(self, title, text):
         sc = ScrollView()
         lbl = TLabel(text, size=13)
+        lbl.font_name = "Regular"
         sc.add_widget(lbl)
         Popup(title=title, content=sc, size_hint=(0.92, 0.8),
               title_font=FONTB).open()
@@ -1212,17 +1458,17 @@ class TabelApp(App):
                     intent.putExtra(Intent.EXTRA_TITLE, os.path.basename(path))
                     autoclass("org.kivy.android.PythonActivity").mActivity.startActivityForResult(intent, 4817)
                 except Exception as ex:
-                    Clock.schedule_once(lambda _d, m=str(ex): self._backup_done(m), 0)
+                    Clock.schedule_once(lambda _dt, msg=str(ex): self._backup_done(msg), 0)
             launch()
         except Exception as ex:
             self._backup_done(str(ex))
 
     def _backup_done(self, error=None, cancelled=False):
-        if self._backup_result_bound and android_activity is not None:
+        if self._backup_result_bound:
             android_activity.unbind(on_activity_result=self._on_backup_result)
             self._backup_result_bound = False
         self._backup_pending_path = None
-        if self._stopping:
+        if getattr(self, '_stopping', False):
             return
         if error:
             self._popup("Ошибка сохранения копии", error)
@@ -1235,25 +1481,22 @@ class TabelApp(App):
         if request_code != 4817:
             return
         try:
-            uri = (str(intent.getData().toString())
-                   if result_code == -1 and intent is not None
-                   and intent.getData() is not None else None)
-            Clock.schedule_once(lambda _d: self._write_backup_uri(uri), 0)
+            uri = str(intent.getData().toString()) if result_code == -1 and intent is not None and intent.getData() is not None else None
+            Clock.schedule_once(lambda _dt: self._write_backup_uri(uri), 0)
         except Exception as ex:
-            Clock.schedule_once(lambda _d, m=str(ex): self._backup_done(m), 0)
+            Clock.schedule_once(lambda _dt, msg=str(ex): self._backup_done(msg), 0)
 
     def _write_backup_uri(self, uri):
         path = self._backup_pending_path
-        if self._stopping or not path:
+        if getattr(self, '_stopping', False) or not path:
             return
-        if self._backup_result_bound and android_activity is not None:
+        if self._backup_result_bound:
             android_activity.unbind(on_activity_result=self._on_backup_result)
             self._backup_result_bound = False
         if uri is None:
             self._backup_done(cancelled=True)
             return
         import threading
-
         def copy_file():
             try:
                 from jnius import autoclass
@@ -1272,10 +1515,9 @@ class TabelApp(App):
                     output.flush()
                 finally:
                     output.close()
-                Clock.schedule_once(lambda _d: self._backup_done(), 0)
+                Clock.schedule_once(lambda _dt: self._backup_done(), 0)
             except Exception as ex:
-                Clock.schedule_once(lambda _d, m=str(ex): self._backup_done(m), 0)
-
+                Clock.schedule_once(lambda _dt, msg=str(ex): self._backup_done(msg), 0)
         threading.Thread(target=copy_file, daemon=True).start()
 
     def share_week(self):
@@ -1288,33 +1530,51 @@ class TabelApp(App):
         self._share(reports.export_text(days, "Табель 2.0. " + month_title(anchor)))
 
     def on_pause(self):
-        if getattr(self, "_restoring", False):
+        if getattr(self, '_restoring', False):
             return True
         try:
             e = self.s_day.collect()
             saved = self.db.load_day(self.current)
-            if (not e.is_empty and not getattr(saved, "approved_at", "")
-                    and not self.db.week_received(self.current)):
+            if not e.is_empty and not saved.approved_at and not self.db.week_received(self.current):
+                # Сохраняем состояние синхронизации
+                e.approved_at = saved.approved_at
+                e.version = saved.version or 1
+                e.sync_status = saved.sync_status
                 self.db.save_day(e)
         except Exception:
             pass
         return True
 
     def on_stop(self):
-        self._stopping = True
-        self.on_pause()
+        # Останавливаем фоновую синхронизацию
         if self.sync_event:
             self.sync_event.cancel()
+        
+        self._stopping = True
+        self.on_pause()
         try:
             self.restore_controller.close()
-            if self._backup_result_bound and android_activity is not None:
+            if self._backup_result_bound:
                 android_activity.unbind(on_activity_result=self._on_backup_result)
                 self._backup_result_bound = False
-            editor = getattr(self.s_day, "_native_editor", None)
+            editor = getattr(self.s_day, '_native_editor', None)
             if editor:
                 editor.close()
         finally:
             self.db.close()
+
+
+def _f(text, default=0.0):
+    try:
+        return float(str(text).replace(",", ".").replace(" ", ""))
+    except (TypeError, ValueError):
+        return default
+
+
+def _num(v):
+    v = float(v or 0)
+    return str(int(v)) if abs(v - int(v)) < 1e-9 else ("%.2f" % v)
+
 
 if __name__ == "__main__":
     TabelApp().run()

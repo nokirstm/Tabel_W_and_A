@@ -3,8 +3,10 @@ title = Табель 2.0
 package.name = tabel
 package.domain = ru.tabel
 source.dir = .
-source.include_exts = py,png,jpg,ttf,kv,json
+source.include_exts = py,png,jpg,ttf,kv,json,java
 source.include_patterns = assets/*
+source.exclude_dirs = tests
+android.add_src = java
 version = 2.0.0
 requirements = python3,kivy==2.1.0,requests,certifi
 orientation = portrait

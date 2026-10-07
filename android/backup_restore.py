@@ -6,6 +6,7 @@ import os
 import sqlite3
 import uuid
 from dataclasses import fields
+
 from timecard_core import DayEntry, DEFAULT_SETTINGS, week_start
 
 MAX_BYTES = 8 * 1024 * 1024
@@ -14,6 +15,8 @@ BOOLS = {'lunch_on', 'extra_on', 'extra_use_fixed', 'penalty_on'}
 TIMES = {'start', 'end', 'extra_start', 'extra_end'}
 MONEY = {'rate', 'extra_rate', 'extra_fixed', 'bonus', 'penalty'}
 STRINGS = {'works', 'extra_works', 'note', 'approved_at'}
+# Устаревшие глобальные ключи выплаты из ядер до понедельной схемы.
+LEGACY_RECEIVED = ('received', 'received_date')
 COLUMNS = tuple(f.name for f in fields(DayEntry))
 
 
@@ -40,7 +43,7 @@ def parse_backup(text):
     if len(text.encode('utf-8')) > MAX_BYTES:
         raise ValueError('Файл превышает 8 МБ')
     data = json.loads(text, object_pairs_hook=_pairs,
-                      parse_constant=lambda _: (_ for _ in ()).throw(ValueError('Недопустимое число JSON')))
+                      parse_constant=lambda c: (_ for _ in ()).throw(ValueError('Недопустимое число JSON')))
     if not isinstance(data, dict) or not {'settings', 'days'} <= data.keys():
         raise ValueError('Это не резервная копия Табеля: нужны settings и days')
     if data.get('format_version', 1) != 1:
@@ -49,7 +52,9 @@ def parse_backup(text):
         raise ValueError('Некорректные settings или days')
     if len(data['days']) > MAX_DAYS:
         raise ValueError('Слишком много записей в копии')
+
     settings = {}
+    legacy = {}
     for key, value in data['settings'].items():
         if not isinstance(value, str) or len(value) > 10000:
             raise ValueError('Некорректный тип настройки')
@@ -62,6 +67,9 @@ def parse_backup(text):
                 raise ValueError('Некорректный статус недели')
             if prefix == 'received_on_' and value:
                 _date(value)
+        elif key in LEGACY_RECEIVED:
+            legacy[key] = value
+            continue
         elif key not in DEFAULT_SETTINGS:
             raise ValueError('Неизвестная настройка в копии: ' + key)
         if key in ('rate', 'extra_rate'):
@@ -69,6 +77,7 @@ def parse_backup(text):
             if not math.isfinite(number) or not 0 <= number <= 1e12:
                 raise ValueError('Некорректная ставка')
         settings[key] = value
+
     rows, seen = [], set()
     for source in data['days']:
         if not isinstance(source, dict) or 'date' not in source:
@@ -97,6 +106,19 @@ def parse_backup(text):
             if not isinstance(row[key], str) or len(row[key]) > 100000:
                 raise ValueError('Некорректный текст: ' + key)
         rows.append(row)
+
+    # Миграция старого глобального статуса выплаты: привязываем его
+    # к последней неделе, присутствующей в копии, уже в новом формате.
+    if legacy.get('received') == '1' and legacy.get('received_date') and rows:
+        try:
+            paid = _date(legacy['received_date'])
+            last = max(row['date'] for row in rows)
+            monday = week_start(dt.date.fromisoformat(last)).isoformat()
+            settings.setdefault('received_week_' + monday, '1')
+            settings.setdefault('received_on_' + monday, paid)
+        except ValueError:
+            pass
+
     return {'settings': settings, 'days': rows}
 
 
@@ -139,7 +161,7 @@ def restore(db, data):
             db.conn.executemany('INSERT INTO settings(key,value) VALUES(?,?) '
                                 'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                                 plan['data']['settings'].items())
-        check = db.conn.execute('PRAGMA quick_check').fetchone()[0]
-        if check != 'ok':
-            raise ValueError('Проверка целостности БД не пройдена')
+    check = db.conn.execute('PRAGMA quick_check').fetchone()[0]
+    if check != 'ok':
+        raise ValueError('Проверка целостности БД не пройдена')
     return {'added': len(plan['rows']), 'skipped': plan['skipped'], 'snapshot': snapshot}

@@ -371,13 +371,19 @@ class Storage:
         ws = {week_start(dt.date.fromisoformat(r["date"])) for r in rows}
         return sorted(ws, reverse=True)
 
-    def export_json(self, path):
+       def export_json(self, path):
         rows = self.conn.execute("SELECT * FROM days ORDER BY date").fetchall()
+        settings = {}
+        for r in self.conn.execute("SELECT key, value FROM settings"):
+            key = r["key"]
+            if key in DEFAULT_SETTINGS or key.startswith(
+                    ("received_week_", "received_on_")):
+                settings[key] = r["value"]
         data = {
             "app": APP_NAME,
             "format_version": 1,
             "exported": dt.datetime.now().isoformat(timespec="seconds"),
-            "settings": {k: self.get(k) for k in DEFAULT_SETTINGS},
+            "settings": settings,
             "days": [dict(r) for r in rows],
         }
         with open(path, "w", encoding="utf-8") as f:

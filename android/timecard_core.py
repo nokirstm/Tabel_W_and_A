@@ -27,6 +27,7 @@ THEME = {
     "ok": "#4C9A6A", "warn": "#C87A3E", "danger": "#B5544B", "white": "#FFFFFF",
 }
 
+
 def parse_time(text):
     if text is None:
         return None
@@ -46,6 +47,7 @@ def parse_time(text):
         return None
     return h * 60 + mi
 
+
 def parse_duration(text):
     if text is None:
         return 0
@@ -59,23 +61,28 @@ def parse_duration(text):
         return int(s)
     return 0
 
+
 def fmt_time(minutes):
     if minutes is None:
         return ""
     minutes %= 24 * 60
     return "%02d:%02d" % (minutes // 60, minutes % 60)
 
+
 def fmt_hm(minutes):
     minutes = int(minutes or 0)
     return "%d ч %02d мин" % (minutes // 60, minutes % 60)
+
 
 def fmt_hm_short(minutes):
     minutes = int(minutes or 0)
     return "%d.%02d" % (minutes // 60, minutes % 60)
 
+
 def fmt_money(value):
     v = round(float(value or 0))
     return "{:,}".format(v).replace(",", " ") + " \u20bd"
+
 
 def span_minutes(start, end):
     if start is None or end is None:
@@ -84,6 +91,7 @@ def span_minutes(start, end):
     if d < 0:
         d += 24 * 60
     return d
+
 
 @dataclass
 class DayEntry:
@@ -176,30 +184,36 @@ class DayEntry:
         d.setdefault("sync_status", "local")
         return DayEntry(**d)
 
+
 def week_start(d):
     return d - dt.timedelta(days=d.weekday())
+
 
 def week_range(d):
     ws = week_start(d)
     return ws, ws + dt.timedelta(days=6)
 
+
 def week_title(d):
     a, b = week_range(d)
     if a.month == b.month:
-        return "%d–%d %s %d" % (a.day, b.day, MONTHS_RU_GEN[a.month-1], a.year)
-    return "%d %s – %d %s %d" % (a.day, MONTHS_RU_GEN[a.month-1],
-                                  b.day, MONTHS_RU_GEN[b.month-1], b.year)
+        return "%d–%d %s %d" % (a.day, b.day, MONTHS_RU_GEN[a.month - 1], a.year)
+    return "%d %s – %d %s %d" % (a.day, MONTHS_RU_GEN[a.month - 1],
+                                  b.day, MONTHS_RU_GEN[b.month - 1], b.year)
+
 
 def month_title(d):
-    return "%s %d" % (MONTHS_RU[d.month-1], d.year)
+    return "%s %d" % (MONTHS_RU[d.month - 1], d.year)
+
 
 def month_range(d):
     first = d.replace(day=1)
     if d.month == 12:
         last = d.replace(day=31)
     else:
-        last = d.replace(month=d.month+1, day=1) - dt.timedelta(days=1)
+        last = d.replace(month=d.month + 1, day=1) - dt.timedelta(days=1)
     return first, last
+
 
 class Totals:
     def __init__(self, entries):
@@ -213,6 +227,7 @@ class Totals:
         self.penalty = sum(e.penalty_pay for e in self.days)
         self.total_pay = self.day_pay + self.extra_pay + self.bonus - self.penalty
         self.worked_days = len(self.days)
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS days (
@@ -248,6 +263,7 @@ _MIGRATIONS = [
     ("sync_status", "TEXT DEFAULT 'local'"),
 ]
 
+
 def default_data_dir():
     android = os.environ.get("ANDROID_APP_PATH") or os.environ.get("ANDROID_ARGUMENT")
     if android:
@@ -259,6 +275,7 @@ def default_data_dir():
         p = os.path.join(os.path.expanduser("~"), ".tabel_ucheta")
     os.makedirs(p, exist_ok=True)
     return p
+
 
 class Storage:
     def __init__(self, path=None):
@@ -371,7 +388,7 @@ class Storage:
         ws = {week_start(dt.date.fromisoformat(r["date"])) for r in rows}
         return sorted(ws, reverse=True)
 
-       def export_json(self, path):
+    def export_json(self, path):
         rows = self.conn.execute("SELECT * FROM days ORDER BY date").fetchall()
         settings = {}
         for r in self.conn.execute("SELECT key, value FROM settings"):

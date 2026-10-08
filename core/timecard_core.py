@@ -29,18 +29,31 @@ THEME = {
 
 
 def parse_time(text):
+    """'8'/'17' -> час ровно; '8:00'/'8.00'/'8,00'/'8;00'/'8 00'/'0800' -> 480;
+    '17:15'/'17.15'/'17,15'/'17;15' -> 1035. None если пусто или мусор."""
     if text is None:
         return None
-    s = str(text).strip().replace(",", ".").replace(" ", "")
+    s = str(text).strip()
+    s = s.replace(",", ".").replace(";", ".").replace(" ", "").replace(".", ":")
     if not s:
         return None
-    m = re.fullmatch(r"(\d{1,2}):(\d{1,2})", s)
-    if m:
-        h, mi = int(m.group(1)), int(m.group(2))
-    elif re.fullmatch(r"\d{1,2}", s):
-        h, mi = int(s), 0
-    elif re.fullmatch(r"\d{3,4}", s):
-        h, mi = int(s[:-2]), int(s[-2:])
+    if ":" in s:
+        parts = s.split(":")
+        if len(parts) != 2:
+            return None
+        h_s, m_s = parts
+        if not (h_s.isascii() and h_s.isdigit() and m_s.isascii() and m_s.isdigit()):
+            return None
+        if not (1 <= len(h_s) <= 2 and 1 <= len(m_s) <= 2):
+            return None
+        h, mi = int(h_s), int(m_s)
+    elif s.isascii() and s.isdigit():
+        if len(s) <= 2:
+            h, mi = int(s), 0
+        elif len(s) in (3, 4):
+            h, mi = int(s[:-2]), int(s[-2:])
+        else:
+            return None
     else:
         return None
     if not (0 <= h <= 23 and 0 <= mi <= 59):
@@ -49,16 +62,29 @@ def parse_time(text):
 
 
 def parse_duration(text):
+    """Длительность обеда: '30'/'45'/'90' -> минуты;
+    '1:00'/'1.00'/'1,00'/'1;00'/'1 00' -> 60 минут."""
     if text is None:
         return 0
-    s = str(text).strip().replace(",", ".").replace(" ", "")
+    s = str(text).strip()
+    s = s.replace(",", ".").replace(";", ".").replace(" ", "").replace(".", ":")
     if not s:
         return 0
-    m = re.fullmatch(r"(\d{1,2}):(\d{1,2})", s)
-    if m:
-        return int(m.group(1)) * 60 + int(m.group(2))
-    if re.fullmatch(r"\d{1,3}", s):
-        return int(s)
+    if ":" in s:
+        parts = s.split(":")
+        if len(parts) != 2:
+            return 0
+        h_s, m_s = parts
+        if not (h_s.isascii() and h_s.isdigit() and m_s.isascii() and m_s.isdigit()):
+            return 0
+        if not (1 <= len(h_s) <= 2 and 1 <= len(m_s) <= 2):
+            return 0
+        return int(h_s) * 60 + int(m_s)
+    if s.isascii() and s.isdigit():
+        if len(s) <= 3:
+            return int(s)
+        if len(s) == 4:
+            return int(s[:-2]) * 60 + int(s[-2:])
     return 0
 
 

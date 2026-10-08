@@ -4,7 +4,7 @@
 Android-версия (Kivy). Собирается в .apk через buildozer.
 Использует то же ядро расчётов, что и Windows-версия: core/timecard_core.py
 
-ВЕРСИЯ 2.0.0 - синхронизация с сервером + защиты экрана дня
+ВЕРСИЯ 2.0.0 - синхронизация с сервером, защиты экрана дня, всеядный ввод
 """
 import os
 import sys
@@ -895,7 +895,7 @@ class WeekScreen(Screen):
             self.received_toggle.set(False)
             toast("Сначала начальник должен одобрить все заполненные дни", "warn")
             return
-                got = _parse_date_ru(self.f_received.input.text)
+        got = _parse_date_ru(self.f_received.input.text)
         if got is None:
             self.received_toggle.set(False)
             toast("Введите дату в формате ДД.ММ.ГГГГ", "warn")

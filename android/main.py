@@ -4,7 +4,7 @@
 Android-версия (Kivy). Собирается в .apk через buildozer.
 Использует то же ядро расчётов, что и Windows-версия: core/timecard_core.py
 
-ВЕРСИЯ 2.0.0 - Добавлена синхронизация с сервером
+ВЕРСИЯ 2.0.0 - синхронизация с сервером + защиты экрана дня
 """
 import os
 import sys
@@ -59,7 +59,7 @@ except ImportError:
 
 SYNC_API_URL = ("https://script.google.com/macros/s/"
                 "AKfycbwDWAS8t__5y3WdFudGQa8OMyWxxBYl56tiJY5RHjR1EmBPiyTrlXUpa2CcmI-q3sQBdQ/exec")
-SYNC_API_TOKEN = "28096b2395454f05a7ce7a2b0fcfe3b2e58fd9bed8d5465db4560056a662659c"
+SYNC_API_TOKEN = "ВСТАВЬ_СЮДА_СВОЙ_ТОКЕН"
 
 C = {k: hexc(v) for k, v in T.items()}
 
@@ -113,7 +113,6 @@ class Card(BoxLayout):
             self.height = 0
 
     def on_touch_down(self, touch):
-        # height=0/opacity=0 do NOT remove children from Kivy hit testing.
         if self._collapsed:
             return False
         return super().on_touch_down(touch)
@@ -296,6 +295,8 @@ class DayScreen(Screen):
         super().__init__(name="day", **kw)
         self.app = app
         self._loading = False
+        self._load_ok = True
+        self._report_shown = False
         self._editor_busy = False
         self._editor_target = "works"
         self._editor_date = None
@@ -368,13 +369,8 @@ class DayScreen(Screen):
 
         # --- работы ---
         c3 = Card("Объём и качество произведённых работ")
-        # Видимая область сохраняется. На Android любое нажатие по ней
-        # открывает настоящий android.widget.EditText.
         self._works_text = ""
         self._extra_works_text = ""
-        self._editor_target = None
-        self._native_editor = None
-        self._editor_busy = False
         self.lbl_works = FlatButton("что делал на работе…", height=130,
                                    bg=C["white"], fg=C["text"], size=15, font=FONT,
                                    halign="left", valign="top", padding=(dp(12), dp(12)),
@@ -406,8 +402,6 @@ class DayScreen(Screen):
         self.f_xfixed = field("Сумма за доп. работы, ₽", "0", True, self.recalc)
         self.extra_box.add_widget(self.f_xfixed)
 
-        # Описание дополнительных работ редактируется тем же нативным
-        # Android EditText, что и описание обычных работ.
         self.lbl_xworks = FlatButton("описание доп. работ…", height=100,
                                      bg=C["white"], fg=C["text_muted"], size=15,
                                      font=FONT, halign="left", valign="top",
@@ -525,7 +519,6 @@ class DayScreen(Screen):
         title = ("Описание произведённых работ" if target == "works"
                  else "Описание дополнительных работ")
 
-        # Release any Kivy text field focus before opening the Android window.
         for widget in self.walk():
             if isinstance(widget, TextInput):
                 widget.focus = False
@@ -634,13 +627,26 @@ class DayScreen(Screen):
         e.bonus = _f(self.f_bonus.input.text, 0)
         e.penalty_on = self.t_penalty.get()
         e.penalty = _f(self.f_penalty.input.text, 0) if e.penalty_on else 0
-        # Editing the description must not recalculate old days at today's rate.
         return e
+
+    def _report(self, where, ex):
+        """Показывает текст исключения прямо на экране и дублирует в лог."""
+        import traceback
+        from kivy.logger import Logger
+        Logger.exception("DayScreen.%s failed" % where)
+        if not getattr(self, "_report_shown", False):
+            self._report_shown = True
+            self.app._popup("Ошибка экрана дня: " + where,
+                            "%s\n%s" % (ex, traceback.format_exc(limit=4)))
 
     def recalc(self, *_):
         if self._loading:
             return
-        e = self.collect()
+        try:
+            e = self.collect()
+        except Exception as ex:
+            self._report("collect", ex)
+            return
         self.r_hours.value.text = fmt_hm(e.work_min)
         self.r_xhours.value.text = fmt_hm(e.extra_min)
         self.r_pay.value.text = fmt_money(e.day_pay)
@@ -650,35 +656,42 @@ class DayScreen(Screen):
         self.r_total.value.text = fmt_money(e.total_pay)
 
     def load(self, d):
+        self._load_ok = False
+        self._report_shown = False
         self._loading = True
-        self.app.current = d
-        e = self.app.db.load_day(d)
-        self._loaded_entry = e
-        self.l_wd.text = WEEKDAYS_RU[d.weekday()]
-        self.l_dt.text = "%02d.%02d.%d   •   %s" % (d.day, d.month, d.year,
-                                                    week_title(d))
-        self.f_start.input.text = fmt_time(e.start) if e.start is not None else ""
-        self.f_end.input.text = fmt_time(e.end) if e.end is not None else ""
-        self.t_lunch.set(e.lunch_on)
-        self._toggle_panel("lunch", e.lunch_on)
-        self.f_lunch.input.text = str(e.lunch_min or "")
-        self._works_text = e.works or ''
-        self.lbl_works.text = e.works if e.works else 'что делал на работе…'
-        self.lbl_works.color = C['text'] if e.works else C['text_muted']
-        self.t_extra.set(e.extra_on)
-        self._toggle_panel("extra", e.extra_on)
-        self.f_xstart.input.text = fmt_time(e.extra_start) if e.extra_start is not None else ""
-        self.f_xend.input.text = fmt_time(e.extra_end) if e.extra_end is not None else ""
-        self.f_xrate.input.text = _num(e.extra_rate)
-        self.t_xfixed.set(e.extra_use_fixed)
-        self.f_xfixed.input.text = _num(e.extra_fixed) if e.extra_fixed else ""
-        self._set_extra_works_text(e.extra_works)
-        self.f_bonus.input.text = _num(e.bonus) if e.bonus else ""
-        self.t_penalty.set(e.penalty_on)
-        self.penalty_box.collapse(e.penalty_on)
-        self.f_penalty.input.text = _num(e.penalty) if e.penalty else ""
-        self._loading = False
-        self._set_locked(bool(e.approved_at) or self.app.db.week_received(d))
+        try:
+            self.app.current = d
+            e = self.app.db.load_day(d)
+            self._loaded_entry = e
+            self.l_wd.text = WEEKDAYS_RU[d.weekday()]
+            self.l_dt.text = "%02d.%02d.%d   •   %s" % (d.day, d.month, d.year,
+                                                        week_title(d))
+            self.f_start.input.text = fmt_time(e.start) if e.start is not None else ""
+            self.f_end.input.text = fmt_time(e.end) if e.end is not None else ""
+            self.t_lunch.set(e.lunch_on)
+            self._toggle_panel("lunch", e.lunch_on)
+            self.f_lunch.input.text = str(e.lunch_min or "")
+            self._works_text = e.works or ''
+            self.lbl_works.text = e.works if e.works else 'что делал на работе…'
+            self.lbl_works.color = C['text'] if e.works else C['text_muted']
+            self.t_extra.set(e.extra_on)
+            self._toggle_panel("extra", e.extra_on)
+            self.f_xstart.input.text = fmt_time(e.extra_start) if e.extra_start is not None else ""
+            self.f_xend.input.text = fmt_time(e.extra_end) if e.extra_end is not None else ""
+            self.f_xrate.input.text = _num(e.extra_rate)
+            self.t_xfixed.set(e.extra_use_fixed)
+            self.f_xfixed.input.text = _num(e.extra_fixed) if e.extra_fixed else ""
+            self._set_extra_works_text(e.extra_works)
+            self.f_bonus.input.text = _num(e.bonus) if e.bonus else ""
+            self.t_penalty.set(e.penalty_on)
+            self.penalty_box.collapse(e.penalty_on)
+            self.f_penalty.input.text = _num(e.penalty) if e.penalty else ""
+            self._loading = False
+            self._set_locked(bool(e.approved_at) or self.app.db.week_received(d))
+            self._load_ok = True
+        except Exception as ex:
+            self._loading = False
+            self._report("load", ex)
         self.recalc()
 
     def _set_locked(self, locked):
@@ -704,6 +717,9 @@ class DayScreen(Screen):
         self.recalc()
 
     def save(self):
+        if not getattr(self, "_load_ok", True):
+            toast("Экран дня загружен с ошибкой: сохранение заблокировано", "warn")
+            return
         e = self.collect()
         if e.start is not None and e.end is None:
             toast("Укажите время окончания работы", "warn")
@@ -712,20 +728,14 @@ class DayScreen(Screen):
         if saved.approved_at or self.app.db.week_received(self.app.current):
             toast("Эта запись уже закрыта", "warn")
             return
-        
-        # Сохраняем состояние синхронизации
         e.approved_at = saved.approved_at
         e.version = self.app.db.increment_day_version(self.app.current)
         e.sync_status = "local"
-        
         self.app.db.save_day(e)
         toast("Сохранено: %s" % fmt_money(e.total_pay))
-        
-        # Отправляем обновление на сервер
         self._send_day_updated(e)
 
     def _send_day_updated(self, e):
-        """Отправляет day_updated на сервер если устройство привязано."""
         if not (SYNC_AVAILABLE and self.app.sync_client):
             return
         emp_id = self.app.db.get("employee_id", "")
@@ -739,6 +749,9 @@ class DayScreen(Screen):
                                         e.date, payload, e.version)
 
     def clear(self):
+        if not getattr(self, "_load_ok", True):
+            toast("Экран дня загружен с ошибкой: удаление заблокировано", "warn")
+            return
         saved = self.app.db.load_day(self.app.current)
         if saved.approved_at or self.app.db.week_received(self.app.current):
             toast("Эта запись уже закрыта", "warn")
@@ -889,13 +902,10 @@ class WeekScreen(Screen):
             self.received_toggle.set(False)
             toast("Введите дату в формате ДД.ММ.ГГГГ", "warn")
             return
-        
         version = self.app.db.increment_week_version(self.app.current)
         self.app.db.set_received(self.app.current, got.isoformat())
         self.refresh()
         toast("Неделя окончательно закрыта", "ok")
-        
-        # Отправляем подтверждение на сервер
         if SYNC_AVAILABLE and self.app.sync_client:
             emp_id = self.app.db.get("employee_id", "")
             emp_token = self.app.db.get("employee_token", "") or self.app.db.get("secret_key", "")
@@ -1040,15 +1050,15 @@ class SettingsScreen(Screen):
         self.f_emp_id = field("employee_id (заполнится автоматически)", "")
         self.f_emp_id.input.disabled = True
         c_sync.add_widget(self.f_emp_id)
-        
+
         self.f_restore_name = field("ФИО (для восстановления аккаунта)", "")
         self.f_restore_birth = field("Дата рождения (ДД.ММ.ГГГГ)", "")
         c_sync.add_widget(self.f_restore_name)
         c_sync.add_widget(self.f_restore_birth)
-        
+
         self.lbl_sync = TLabel("", size=12, color=C["text_muted"])
         c_sync.add_widget(self.lbl_sync)
-        
+
         sync_btns = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
         self.btn_bind = FlatButton("ПРИВЯЗАТЬ", bg=C["accent_light"],
                                     fg=C["accent_dark"], height=50, size=13,
@@ -1059,7 +1069,7 @@ class SettingsScreen(Screen):
         sync_btns.add_widget(self.btn_bind)
         sync_btns.add_widget(self.btn_restore)
         c_sync.add_widget(sync_btns)
-        
+
         body.add_widget(c_sync)
 
         body.add_widget(FlatButton("СОХРАНИТЬ НАСТРОЙКИ", height=54,
@@ -1197,7 +1207,6 @@ class SettingsScreen(Screen):
             entry_data = payload.get("entry", {}) or {}
             if not date or not entry_data:
                 continue
-            # Не перезаписываем уже одобренные локальные записи более старыми версиями
             existing = self.app.db.load_day(date)
             if existing and getattr(existing, "version", 1) >= version:
                 continue
@@ -1277,25 +1286,23 @@ class TabelApp(App):
         self._restoring = False
         from restore_ui import RestoreController
         self.restore_controller = RestoreController(self)
-        
+
         # === ИНИЦИАЛИЗАЦИЯ СИНХРОНИЗАЦИИ ===
         self.sync_client = None
         self.sync_event = None
-        
+
         if SYNC_AVAILABLE:
             device_id_file = os.path.join(self.data_dir, "device_id.txt")
             self.sync_client = SyncClient(SYNC_API_URL, SYNC_API_TOKEN, device_id_file)
-            
-            # Загружаем credentials из БД
+
             emp_id = self.db.get("employee_id", "")
             emp_token = self.db.get("employee_token", "") or self.db.get("secret_key", "")
             if emp_id and emp_token:
                 self.sync_client.set_credentials(emp_id, emp_token)
-            
-            # Запускаем фоновую синхронизацию каждые 30 секунд
+
             self.sync_event = Clock.schedule_interval(self._poll_sync, 30)
             Clock.schedule_once(lambda *_: self._poll_sync(0), 3)
-        
+
         Window.clearcolor = C["bg"]
 
         root = BoxLayout(orientation="vertical")
@@ -1533,10 +1540,11 @@ class TabelApp(App):
         if getattr(self, '_restoring', False):
             return True
         try:
+            if not getattr(self.s_day, "_load_ok", True):
+                return True
             e = self.s_day.collect()
             saved = self.db.load_day(self.current)
             if not e.is_empty and not saved.approved_at and not self.db.week_received(self.current):
-                # Сохраняем состояние синхронизации
                 e.approved_at = saved.approved_at
                 e.version = saved.version or 1
                 e.sync_status = saved.sync_status
@@ -1546,10 +1554,9 @@ class TabelApp(App):
         return True
 
     def on_stop(self):
-        # Останавливаем фоновую синхронизацию
         if self.sync_event:
             self.sync_event.cancel()
-        
+
         self._stopping = True
         self.on_pause()
         try:

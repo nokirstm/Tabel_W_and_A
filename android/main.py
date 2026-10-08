@@ -895,10 +895,8 @@ class WeekScreen(Screen):
             self.received_toggle.set(False)
             toast("Сначала начальник должен одобрить все заполненные дни", "warn")
             return
-        raw = self.f_received.input.text.strip()
-        try:
-            got = dt.datetime.strptime(raw, "%d.%m.%Y").date()
-        except ValueError:
+                got = _parse_date_ru(self.f_received.input.text)
+        if got is None:
             self.received_toggle.set(False)
             toast("Введите дату в формате ДД.ММ.ГГГГ", "warn")
             return
@@ -1581,6 +1579,29 @@ def _f(text, default=0.0):
 def _num(v):
     v = float(v or 0)
     return str(int(v)) if abs(v - int(v)) < 1e-9 else ("%.2f" % v)
+
+
+def _parse_date_ru(text):
+    """'05.10.2026' / '05/10/2026' / '05-10-2026' / '5.10.2026' / '05.10.26' -> date.
+    None, если ввод не распознан или дата не существует."""
+    s = str(text or "").strip()
+    s = s.replace("/", ".").replace("-", ".").replace(" ", "")
+    if not s:
+        return None
+    parts = s.split(".")
+    if len(parts) != 3:
+        return None
+    if not all(p.isascii() and p.isdigit() for p in parts):
+        return None
+    d_s, m_s, y_s = parts
+    if len(y_s) == 2:
+        y_s = ("20" if int(y_s) < 70 else "19") + y_s
+    if not (len(d_s) in (1, 2) and len(m_s) in (1, 2) and len(y_s) == 4):
+        return None
+    try:
+        return dt.date(int(y_s), int(m_s), int(d_s))
+    except ValueError:
+        return None
 
 
 if __name__ == "__main__":

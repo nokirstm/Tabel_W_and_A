@@ -59,7 +59,7 @@ except ImportError:
 
 SYNC_API_URL = ("https://script.google.com/macros/s/"
                 "AKfycbwDWAS8t__5y3WdFudGQa8OMyWxxBYl56tiJY5RHjR1EmBPiyTrlXUpa2CcmI-q3sQBdQ/exec")
-SYNC_API_TOKEN = "ВСТАВЬ_СЮДА_СВОЙ_ТОКЕН"
+SYNC_API_TOKEN = "28096b2395454f05a7ce7a2b0fcfe3b2e58fd9bed8d5465db4560056a662659c"
 
 C = {k: hexc(v) for k, v in T.items()}
 

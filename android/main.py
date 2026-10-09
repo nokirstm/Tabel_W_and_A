@@ -160,7 +160,7 @@ class TInput(TextInput):
             input_type="number" if numeric else "text",
             write_tab=False, **kw)
         with self.canvas.after:
-            self._c = Color(C["border"])
+            self._c = Color(*C["border"])
             self._l = Line(width=1.2)
         self.bind(pos=self._sync, size=self._sync, focus=self._focus)
 
@@ -169,12 +169,6 @@ class TInput(TextInput):
 
     def _focus(self, _w, val):
         self._c.rgba = C["accent"] if val else C["border"]
-
-    def on_touch_down(self, touch):
-        if self.collide_point(*touch.pos):
-            self.focus = True
-            return True
-        return super().on_touch_down(touch)
 
 
 class FlatButton(Button):
@@ -1281,8 +1275,6 @@ class TabelApp(App):
     title = "Табель 2.0"
 
     def build(self):
-        from kivy.core.window import Window
-        Window.softinput_mode = "pan"
         self.data_dir = self.user_data_dir
         os.makedirs(self.data_dir, exist_ok=True)
         self.db = Storage(os.path.join(self.data_dir, "timecard.db"))

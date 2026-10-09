@@ -1,3 +1,5 @@
 openpyxl>=3.1
 reportlab>=4.0
 pyinstaller>=6.3
+requests>=2.31
+certifi>=2024.7.14

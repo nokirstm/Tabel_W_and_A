@@ -2,7 +2,7 @@ name: Сборка Tabel (.exe и .apk)
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, windows-sync-v2 ]
   workflow_dispatch:
 
 jobs:
@@ -10,6 +10,8 @@ jobs:
   windows-exe:
     name: Windows — Tabel.exe
     runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -54,7 +56,7 @@ jobs:
             build-essential automake autoconf libtool pkg-config \
             zlib1g-dev libncurses-dev libncursesw5-dev \
             libtinfo6 cmake libffi-dev libssl-dev \
-            libltdl-dev python3-dev
+            libltdl-7 libltdl-dev python3-dev
 
       - name: Buildozer
         run: pip install --upgrade buildozer cython==0.29.36 virtualenv

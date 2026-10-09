@@ -4,6 +4,7 @@ PyInstaller-спецификация для сборки Tabel.exe
 Сборка:  pyinstaller tabel.spec --noconfirm --clean
 """
 import os
+from PyInstaller.utils.hooks import collect_data_files
 
 block_cipher = None
 ROOT = os.path.abspath(os.getcwd())          # папка windows/
@@ -18,8 +19,9 @@ a = Analysis(
         (os.path.join(ROOT, "assets", "icon.png"), "assets"),
         (os.path.join(ROOT, "assets", "DejaVuSans.ttf"), "assets"),
         (os.path.join(ROOT, "assets", "DejaVuSans-Bold.ttf"), "assets"),
-    ],
-    hiddenimports=["timecard_core", "reports", "ui_kit", "openpyxl", "reportlab"],
+    ] + collect_data_files("certifi"),
+    hiddenimports=["timecard_core", "reports", "ui_kit", "sync_client",
+                   "openpyxl", "reportlab", "requests", "certifi"],
     hookspath=[],
     runtime_hooks=[],
     excludes=["matplotlib", "numpy", "pandas", "PyQt5", "PySide2", "test", "unittest"],

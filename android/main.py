@@ -1283,7 +1283,6 @@ class TabelApp(App):
         def build(self):
         from kivy.core.window import Window
         Window.softinput_mode = "pan"
-        
         self.data_dir = self.user_data_dir
         os.makedirs(self.data_dir, exist_ok=True)
         self.db = Storage(os.path.join(self.data_dir, "timecard.db"))

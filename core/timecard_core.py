@@ -289,7 +289,11 @@ def default_data_dir():
 class Storage:
     def __init__(self, path=None):
         self.path = path or os.path.join(default_data_dir(), DB_FILENAME)
-        self.conn = sqlite3.connect(self.path)
+        # check_same_thread=False: на Android callback опроса очереди приходит
+        # из сетевого потока и обязан иметь возможность писать в БД
+        # (mark_approved). Без флага sqlite3 бросает ProgrammingError,
+        # который тихо глотается обёрткой потока — одобрение терялось.
+        self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         cols = [r[1] for r in self.conn.execute("PRAGMA table_info(days)")]

@@ -2,10 +2,11 @@
 """
 Табель — учёт рабочего времени и выплат.
 Windows-версия (Tkinter). Собирается в .exe через PyInstaller.
-ВЕРСИЯ 2.0.0 — синхронизация с сервером (Google Apps Script), одобрения дней.
+ВЕРСИЯ 2.0.1 — синхронизация с сервером, одобрения, штрафы, журнал синхронизации.
 """
 import os
 import sys
+import json
 import queue
 import datetime as dt
 import tkinter as tk
@@ -305,6 +306,15 @@ class App(tk.Tk):
             if emp_id and emp_tok:
                 self.sync_client.set_credentials(emp_id, emp_tok)
 
+        # --- диагностика синхронизации ---
+        self.sync_stats = {"polls": 0, "items": 0, "applied": 0, "skipped": 0}
+        self._sync_last_poll = "ещё не было"
+        self.sync_log_path = os.path.join(os.path.dirname(self.db.path),
+                                          "sync_log.txt")
+        self._log_sync("start", "приложение запущено; device_id=%s; creds=%s"
+                       % (self.sync_client.device_id if self.sync_client else "-",
+                          bool(self._has_creds())))
+
         ui.install_styles(self)
         self._build_header()
         self._build_tabs()
@@ -330,17 +340,40 @@ class App(tk.Tk):
         emp_id, emp_tok = self._creds()
         return bool(emp_id and emp_tok)
 
+    def _log_sync(self, kind, text):
+        try:
+            with open(self.sync_log_path, "a", encoding="utf-8") as f:
+                f.write("%s [%s] %s\n" % (
+                    dt.datetime.now().strftime("%d.%m.%Y %H:%M:%S"), kind, text))
+        except Exception:
+            pass
+
     def _poll_loop(self):
         """Раз в 30 секунд: опрос очереди сервера в daemon-потоке."""
         self._after_poll = None
         try:
             if self.sync_client and self._has_creds():
+                self._log_sync("poll", "запрос очереди")
                 self.sync_client.send_async(
                     "poll_commands",
                     callback=lambda r: self.sync_queue.put(("poll", r)))
         except Exception as ex:
             self.sync_queue.put(("poll", {"ok": False, "error": str(ex)}))
         self._after_poll = self.after(POLL_MS, self._poll_loop)
+
+    def _poll_now(self):
+        """Ручной опрос очереди из настроек (без ожидания 30 секунд)."""
+        if not (SYNC_AVAILABLE and self.sync_client):
+            ui.toast(self, "Синхронизация недоступна в этой сборке", "warn")
+            return
+        if not self._has_creds():
+            ui.toast(self, "Нет регистрации: опрос невозможен", "warn")
+            return
+        self._log_sync("poll", "ручной запрос очереди")
+        self.sync_client.send_async(
+            "poll_commands",
+            callback=lambda r: self.sync_queue.put(("poll", r)))
+        ui.toast(self, "Опрос сервера отправлен")
 
     def _queue_loop(self):
         """Главный поток разбирает очередь событий от сетевых потоков."""
@@ -359,6 +392,7 @@ class App(tk.Tk):
                         self._on_approved_sent(rest[0])
                 except Exception as ex:
                     self._sync_last_error = str(ex)
+                    self._log_sync("error", "сбой обработки %s: %s" % (kind, ex))
         except queue.Empty:
             pass
         except Exception as ex:
@@ -366,35 +400,59 @@ class App(tk.Tk):
         self._after_queue = self.after(QUEUE_MS, self._queue_loop)
 
     def _handle_poll(self, result):
+        self.sync_stats["polls"] += 1
+        self._sync_last_poll = dt.datetime.now().strftime("%H:%M:%S")
         if not result.get("ok"):
             err = str(result.get("error", ""))
+            self._log_sync("poll", "ответ сервера: ошибка %s" % err)
             if err not in ("no_connection", "timeout", "device not registered"):
                 self._sync_last_error = err
+            self._update_sync_panel()
             return
         self._sync_last_error = ""
+        items = result.get("items", []) or []
+        self.sync_stats["items"] += len(items)
+        self._log_sync("poll", "ответ ok, команд в очереди: %d" % len(items))
         changed = False
         touch_current = False
-        for item in result.get("items", []) or []:
+        for item in items:
             cmd = item.get("command")
             payload = item.get("payload") or {}
+            self._log_sync("item", json.dumps(item, ensure_ascii=False)[:600])
             try:
                 if cmd == "day_updated":
                     if self._apply_day_updated(payload):
                         changed = True
-                        touch_current = touch_current or (
-                            payload.get("date") == self.current.isoformat())
+                        self.sync_stats["applied"] += 1
+                        self._log_sync("day_updated", "применено date=%s"
+                                       % payload.get("date"))
+                    else:
+                        self.sync_stats["skipped"] += 1
+                        self._log_sync("day_updated", "пропущено date=%s ver=%s"
+                                       % (payload.get("date"), payload.get("version")))
+                    touch_current = touch_current or (
+                        payload.get("date") == self.current.isoformat())
                 elif cmd in ("payment_date_entered", "payment_received"):
                     if self._apply_payment(payload):
                         changed = True
-                        touch_current = True
+                        self.sync_stats["applied"] += 1
+                        self._log_sync(cmd, "применено week=%s" % payload.get("week_id"))
+                    else:
+                        self.sync_stats["skipped"] += 1
+                        self._log_sync(cmd, "пропущено week=%s" % payload.get("week_id"))
+                    touch_current = True
+                else:
+                    self._log_sync("item", "команда %s не для Windows, игнор" % cmd)
             except Exception as ex:
                 self._sync_last_error = str(ex)
+                self._log_sync("error", "сбой применения %s: %s" % (cmd, ex))
         if changed:
             if touch_current:
                 self.load_date(self.current)
             self.refresh_week()
             self.refresh_history()
             ui.toast(self, "Получены обновления с телефона")
+        self._update_sync_panel()
 
     def _apply_day_updated(self, payload):
         """Применяет день с телефона, только если version больше локальной."""
@@ -453,6 +511,7 @@ class App(tk.Tk):
                 self.db.set("employee", name)
             if self.sync_client:
                 self.sync_client.set_credentials(emp_id, emp_tok)
+            self._log_sync("create", "аккаунт создан, employee_id=%s" % emp_id)
             if dlg is not None:
                 try:
                     dlg.destroy()
@@ -463,6 +522,7 @@ class App(tk.Tk):
         else:
             err = str(result.get("error", "неизвестная ошибка"))
             self._sync_last_error = err
+            self._log_sync("create", "ошибка: %s" % err)
             if dlg is not None:
                 dlg.show_error("Ошибка сервера: " + err)
             else:
@@ -472,6 +532,7 @@ class App(tk.Tk):
         dlg = self._restore_dialog
         if result.get("ok") and result.get("status") == "restored":
             days, weeks = self._import_server_state(result)
+            self._log_sync("restore", "импортировано дней=%d недель=%d" % (days, weeks))
             if dlg is not None:
                 try:
                     dlg.destroy()
@@ -482,6 +543,7 @@ class App(tk.Tk):
         else:
             err = str(result.get("error", "неизвестная ошибка"))
             self._sync_last_error = err
+            self._log_sync("restore", "ошибка: %s" % err)
             if dlg is not None:
                 dlg.show_error("Ошибка сервера: " + err)
             else:
@@ -553,13 +615,16 @@ class App(tk.Tk):
 
     def _on_approved_sent(self, result):
         if result.get("ok") and result.get("status") == "synced":
+            self._log_sync("day_approved", "доставлено на телефон")
             ui.toast(self, "Одобрение доставлено на телефон")
         elif result.get("ok") and result.get("status") == "conflict":
+            self._log_sync("day_approved", "conflict: версия записи изменилась")
             ui.toast(self, "Сервер отклонил одобрение: запись изменилась на "
                            "телефоне (version не совпадает)", "warn")
         else:
             err = str(result.get("error", "неизвестная ошибка"))
             self._sync_last_error = err
+            self._log_sync("day_approved", "ошибка доставки: %s" % err)
             ui.toast(self, "Одобрено локально; сервер недоступен: " + err, "warn")
 
     # ---------------------------------------------------------- диалоги/панели
@@ -614,6 +679,14 @@ class App(tk.Tk):
         if self._sync_last_error:
             lbl_reg.config(text=lbl_reg.cget("text") +
                            "  •  ошибка связи: " + self._sync_last_error)
+        stat = getattr(self, "lbl_sync_stat", None)
+        if stat is not None:
+            s = self.sync_stats
+            stat.config(
+                text="Последний опрос: %s  •  опросов: %d  •  команд получено: %d  •  "
+                     "применено: %d  •  пропущено: %d\nЖурнал синхронизации: %s"
+                     % (self._sync_last_poll, s["polls"], s["items"],
+                        s["applied"], s["skipped"], self.sync_log_path))
 
     # ------------------------------------------------------------------ шапка
     def _build_header(self):
@@ -767,6 +840,18 @@ class App(tk.Tk):
                                   highlightcolor=T["accent"], padx=8, pady=4)
         self.txt_xworks.pack(fill="x")
 
+        # штраф
+        c_pen = Card(left, "Штраф")
+        c_pen.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        bp = c_pen.body
+        self.t_penalty = Toggle(bp, "Был штраф", command=self.toggle_penalty)
+        self.t_penalty.pack(anchor="w")
+        self.penalty_panel = tk.Frame(bp, bg=T["surface_alt"], highlightthickness=1,
+                                      highlightbackground=T["border"])
+        pi = tk.Frame(self.penalty_panel, bg=T["surface_alt"])
+        pi.pack(fill="x", padx=12, pady=10)
+        self.f_penalty = self._alt_field(pi, "Сумма штрафа, ₽", 12, "например 500")
+
         # --- правая колонка: расчёт ---
         right = tk.Frame(root, bg=T["bg"])
         right.grid(row=1, column=1, sticky="nsew")
@@ -790,7 +875,8 @@ class App(tk.Tk):
         self.rows_money = {}
         for key, label in (("day", "Оплата за день"),
                            ("extra", "Доп. работы"),
-                           ("bonus", "Премия")):
+                           ("bonus", "Премия"),
+                           ("pen", "Штраф")):
             r = tk.Frame(bc, bg=T["surface"])
             r.pack(fill="x", pady=3)
             tk.Label(r, text=label, bg=T["surface"], fg=T["text"],
@@ -889,11 +975,11 @@ class App(tk.Tk):
                    command=lambda: self.export("month", "pdf")).pack(side="right", padx=4)
 
         cols = ("wd", "date", "time", "hours", "xtime", "xhours", "works",
-                "pay", "xpay", "bonus", "total", "appr")
+                "pay", "xpay", "bonus", "pen", "total", "appr")
         titles = ("День", "Дата", "Время работы", "Кол-во часов", "Доп. время",
                   "Доп. часы", "Объём и качество работ", "Оплата за день",
-                  "Доп. работы", "Премия", "Итого", "Одобрено")
-        widths = (46, 74, 118, 96, 108, 84, 300, 112, 100, 84, 110, 76)
+                  "Доп. работы", "Премия", "Штраф", "Итого", "Одобрено")
+        widths = (46, 74, 118, 96, 108, 84, 280, 112, 100, 84, 90, 110, 76)
         wrap = tk.Frame(root, bg=T["surface"], highlightbackground=T["border"],
                         highlightthickness=1)
         wrap.grid(row=1, column=0, sticky="nsew")
@@ -992,7 +1078,7 @@ class App(tk.Tk):
         b2 = c2.body
         self.s_start = Field(b2, "Начало работы", width=10, justify="left")
         self.s_start.pack(fill="x", pady=4)
-        self.s_end = Field(b2, "Конец работы", width=10, justify="left")
+        self.s_end = Field(b2,Конец работы", width=10, justify="left")
         self.s_end.pack(fill="x", pady=4)
         self.s_lunch = Field(b2, "Обед по умолчанию, минут", width=10, justify="left")
         self.s_lunch.pack(fill="x", pady=4)
@@ -1029,7 +1115,11 @@ class App(tk.Tk):
         self.lbl_dev = tk.Label(b5, text="", bg=T["surface"], fg=T["text_muted"],
                                 font=("Consolas", 8), anchor="w", wraplength=760,
                                 justify="left")
-        self.lbl_dev.pack(fill="x", pady=(2, 8))
+        self.lbl_dev.pack(fill="x", pady=(2, 4))
+        self.lbl_sync_stat = tk.Label(b5, text="", bg=T["surface"], fg=T["text_muted"],
+                                      font=F_SMALL, anchor="w", wraplength=760,
+                                      justify="left")
+        self.lbl_sync_stat.pack(fill="x", pady=(0, 8))
         rowb = tk.Frame(b5, bg=T["surface"])
         rowb.pack(fill="x")
         ttk.Button(rowb, text="Регистрация (новый аккаунт)", style="Accent.TButton",
@@ -1038,6 +1128,8 @@ class App(tk.Tk):
                    command=self.show_token).pack(side="left", padx=(8, 0))
         ttk.Button(rowb, text="Восстановить аккаунт", style="Ghost.TButton",
                    command=self.open_restore).pack(side="left", padx=(8, 0))
+        ttk.Button(rowb, text="Опросить сейчас", style="Ghost.TButton",
+                   command=self._poll_now).pack(side="left", padx=(8, 0))
 
         self.load_settings()
 
@@ -1060,6 +1152,13 @@ class App(tk.Tk):
             self.extra_panel.pack_forget()
         self.recalc()
 
+    def toggle_penalty(self):
+        if self.t_penalty.get():
+            self.penalty_panel.pack(fill="x", pady=(6, 0))
+        else:
+            self.penalty_panel.pack_forget()
+        self.recalc()
+
     def collect(self):
         """Собрать DayEntry из полей формы."""
         e = DayEntry(date=self.current.isoformat())
@@ -1076,6 +1175,8 @@ class App(tk.Tk):
         e.extra_rate = _f(self.f_xrate.get(), self.db.get_float("extra_rate", 250))
         e.extra_fixed = _f(self.f_xfixed.get(), 0)
         e.bonus = _f(self.f_bonus.get(), 0)
+        e.penalty_on = self.t_penalty.get()
+        e.penalty = _f(self.f_penalty.get(), 0) if e.penalty_on else 0
         e.rate = self.db.get_float("rate", 250)
         return e
 
@@ -1088,6 +1189,8 @@ class App(tk.Tk):
         self.rows_money["day"].config(text=fmt_money(e.day_pay))
         self.rows_money["extra"].config(text=fmt_money(e.extra_pay))
         self.rows_money["bonus"].config(text=fmt_money(e.bonus))
+        self.rows_money["pen"].config(
+            text=("−" + fmt_money(e.penalty)) if e.penalty else fmt_money(0))
         self.lbl_total_day.config(text=fmt_money(e.total_pay))
 
     def load_date(self, d):
@@ -1114,13 +1217,18 @@ class App(tk.Tk):
         self.txt_xworks.delete("1.0", "end")
         self.txt_xworks.insert("1.0", e.extra_works)
         self.f_bonus.set(_num(e.bonus) if e.bonus else "")
+        self.t_penalty.set(e.penalty_on)
+        self.f_penalty.set(_num(e.penalty) if e.penalty else "")
 
         self.lunch_panel.pack_forget()
         self.extra_panel.pack_forget()
+        self.penalty_panel.pack_forget()
         if e.lunch_on:
             self.lunch_panel.pack(fill="x", pady=(6, 0))
         if e.extra_on:
             self.extra_panel.pack(fill="x", pady=(6, 0))
+        if e.penalty_on:
+            self.penalty_panel.pack(fill="x", pady=(6, 0))
 
         self._loading = False
         self.recalc()
@@ -1133,10 +1241,10 @@ class App(tk.Tk):
         st = "disabled" if locked else "normal"
         for w in (self.f_start.entry, self.f_end.entry, self.f_lunch.entry,
                   self.f_xstart.entry, self.f_xend.entry, self.f_xrate.entry,
-                  self.f_xfixed.entry, self.f_bonus.entry,
+                  self.f_xfixed.entry, self.f_bonus.entry, self.f_penalty.entry,
                   self.txt_works, self.txt_xworks):
             w.config(state=st)
-        for t in (self.t_lunch, self.t_extra, self.t_xfixed):
+        for t in (self.t_lunch, self.t_extra, self.t_xfixed, self.t_penalty):
             t.cb.config(state=st)
         self.btn_save.config(state=st)
         self.btn_clear.config(state=st)
@@ -1301,6 +1409,7 @@ class App(tk.Tk):
                 fmt_money(e.day_pay) if e.day_pay else "—",
                 fmt_money(e.extra_pay) if e.extra_pay else "—",
                 fmt_money(e.bonus) if e.bonus else "—",
+                fmt_money(e.penalty) if e.penalty else "—",
                 fmt_money(e.total_pay) if e.total_pay else "—",
                 "✓" if e.approved_at else ("—" if not e.is_empty else ""),
             ))
@@ -1309,7 +1418,7 @@ class App(tk.Tk):
             "", "ИТОГО", "", fmt_hm_short(t.work_min), "", fmt_hm_short(t.extra_min),
             "Отработано дней: %d   •   всего %s" % (t.worked_days, fmt_hm(t.total_min)),
             fmt_money(t.day_pay), fmt_money(t.extra_pay), fmt_money(t.bonus),
-            fmt_money(t.total_pay), ""))
+            fmt_money(t.penalty), fmt_money(t.total_pay), ""))
 
         self.w_tiles["days"].set(str(t.worked_days))
         self.w_tiles["hours"].set(fmt_hm(t.work_min))
@@ -1418,7 +1527,7 @@ class App(tk.Tk):
     def _on_tab(self, _e):
         try:
             tab = self.nb.index(self.nb.select())
-        except tk.TclError:
+        except Exception:
             return
         if tab == 1:
             self.refresh_week()

@@ -39,6 +39,9 @@ jobs:
           if-no-files-found: error
 
   # --------------------------------------------------------------- ANDROID APK
+  # Рецепт приведён к проверенному зелёному workflow android.yml:
+  # без несуществующего пакета libltdl-7 и без преждевременного
+  # ANDROID_NDK_HOME (buildozer сам скачивает NDK r25b по buildozer.spec).
   android-apk:
     name: Android — tabel.apk
     runs-on: ubuntu-latest
@@ -53,24 +56,26 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y git zip unzip openjdk-17-jdk python3-pip \
-            build-essential automake autoconf libtool pkg-config \
-            zlib1g-dev libncurses-dev libncursesw5-dev \
-            libtinfo6 cmake libffi-dev libssl-dev \
-            libltdl-7 libltdl-dev python3-dev
+            build-essential automake autoconf libtool pkg-config zlib1g-dev \
+            libncurses-dev libncursesw5-dev libtinfo6 cmake libffi-dev \
+            libssl-dev libltdl-dev python3-dev
 
       - name: Buildozer
-        run: pip install --upgrade buildozer cython==0.29.36 virtualenv
+        run: pip install -q buildozer cython==0.29.36 virtualenv
 
       - name: Копирование общего ядра в проект
-        run: cp core/timecard_core.py core/reports.py android/
-
-      - name: Настройка переменных окружения
         run: |
-          echo "ANDROID_NDK_HOME=$HOME/.buildozer/android/platform/android-ndk-r25b" >> $GITHUB_ENV
-          echo "ANDROID_NDK=$HOME/.buildozer/android/platform/android-ndk-r25b" >> $GITHUB_ENV
+          for f in timecard_core reports sync_client; do
+            if [ -f "core/$f.py" ]; then cp "core/$f.py" android/; fi
+          done
 
-      - name: Очистка кеша buildozer
-        run: rm -rf android/.buildozer
+      - name: Валидация Android-модулей
+        working-directory: android
+        run: |
+          python -m compileall -q .
+          python -m unittest discover -s tests -p 'test_restore.py' -v
+          test -f java/org/tabel/bridge/WorksEditor.java
+          test -f java/org/tabel/bridge/DocumentReader.java
 
       - name: Сборка apk
         working-directory: android

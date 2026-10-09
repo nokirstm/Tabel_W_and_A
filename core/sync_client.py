@@ -106,6 +106,14 @@ class SyncClient:
         }
         return self._make_request('day_updated', payload, employee_id, employee_token)
     
+    def day_approved(self, employee_id, employee_token, date, version):
+        """Одобрение дня начальником. Отправляет только Windows."""
+        payload = {
+            'date': date,
+            'version': version
+        }
+        return self._make_request('day_approved', payload, employee_id, employee_token)
+    
     def payment_date_entered(self, employee_id, employee_token, week_id, payment_date, version):
         """Отправка уведомления о вводе даты выплаты."""
         payload = {
@@ -115,13 +123,25 @@ class SyncClient:
         }
         return self._make_request('payment_date_entered', payload, employee_id, employee_token)
     
-    def payment_received(self, employee_id, employee_token, week_id, version):
-        """Подтверждение получения выплаты."""
+    def payment_received(self, employee_id, employee_token, week_id, *args):
+        """Подтверждение получения выплаты.
+        Терпит обе формы вызова:
+        (emp_id, emp_token, week_id, version) и
+        (emp_id, emp_token, week_id, payload_dict, version) — как вызывает android/main.py."""
+        extra = {}
+        version = 0
+        for a in args:
+            if isinstance(a, dict):
+                extra.update(a)
+            elif isinstance(a, (int, str)):
+                version = a
         payload = {
             'week_id': week_id,
             'payment_confirmed': True,
             'version': version
         }
+        if extra.get('payment_date'):
+            payload['payment_date'] = extra['payment_date']
         return self._make_request('payment_received', payload, employee_id, employee_token)
     
     def poll_commands(self):

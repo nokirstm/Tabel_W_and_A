@@ -1078,7 +1078,7 @@ class App(tk.Tk):
         b2 = c2.body
         self.s_start = Field(b2, "Начало работы", width=10, justify="left")
         self.s_start.pack(fill="x", pady=4)
-        self.s_end = Field(b2,Конец работы", width=10, justify="left")
+        self.s_end = Field(b2, "Конец работы", width=10, justify="left")
         self.s_end.pack(fill="x", pady=4)
         self.s_lunch = Field(b2, "Обед по умолчанию, минут", width=10, justify="left")
         self.s_lunch.pack(fill="x", pady=4)

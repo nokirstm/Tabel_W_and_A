@@ -1280,7 +1280,7 @@ class SettingsScreen(Screen):
 class TabelApp(App):
     title = "Табель 2.0"
 
-        def build(self):
+    def build(self):
         from kivy.core.window import Window
         Window.softinput_mode = "pan"
         self.data_dir = self.user_data_dir

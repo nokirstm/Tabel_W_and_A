@@ -27,7 +27,6 @@ THEME = {
     "ok": "#4C9A6A", "warn": "#C87A3E", "danger": "#B5544B", "white": "#FFFFFF",
 }
 
-
 def parse_time(text):
     """'8'/'17' -> час ровно; '8:00'/'8.00'/'8,00'/'8;00'/'8 00'/'0800' -> 480;
     '17:15'/'17.15'/'17,15'/'17;15' -> 1035. None если пусто или мусор."""
@@ -60,7 +59,6 @@ def parse_time(text):
         return None
     return h * 60 + mi
 
-
 def parse_duration(text):
     """Длительность обеда: '30'/'45'/'90' -> минуты;
     '1:00'/'1.00'/'1,00'/'1;00'/'1 00' -> 60 минут."""
@@ -86,7 +84,6 @@ def parse_duration(text):
         if len(s) == 4:
             return int(s[:-2]) * 60 + int(s[-2:])
     return 0
-  
 
 def fmt_time(minutes):
     if minutes is None:
@@ -94,21 +91,17 @@ def fmt_time(minutes):
     minutes %= 24 * 60
     return "%02d:%02d" % (minutes // 60, minutes % 60)
 
-
 def fmt_hm(minutes):
     minutes = int(minutes or 0)
     return "%d ч %02d мин" % (minutes // 60, minutes % 60)
-
 
 def fmt_hm_short(minutes):
     minutes = int(minutes or 0)
     return "%d.%02d" % (minutes // 60, minutes % 60)
 
-
 def fmt_money(value):
     v = round(float(value or 0))
     return "{:,}".format(v).replace(",", " ") + " \u20bd"
-
 
 def span_minutes(start, end):
     if start is None or end is None:
@@ -117,7 +110,6 @@ def span_minutes(start, end):
     if d < 0:
         d += 24 * 60
     return d
-
 
 @dataclass
 class DayEntry:
@@ -210,15 +202,12 @@ class DayEntry:
         d.setdefault("sync_status", "local")
         return DayEntry(**d)
 
-
 def week_start(d):
     return d - dt.timedelta(days=d.weekday())
-
 
 def week_range(d):
     ws = week_start(d)
     return ws, ws + dt.timedelta(days=6)
-
 
 def week_title(d):
     a, b = week_range(d)
@@ -227,10 +216,8 @@ def week_title(d):
     return "%d %s – %d %s %d" % (a.day, MONTHS_RU_GEN[a.month - 1],
                                   b.day, MONTHS_RU_GEN[b.month - 1], b.year)
 
-
 def month_title(d):
     return "%s %d" % (MONTHS_RU[d.month - 1], d.year)
-
 
 def month_range(d):
     first = d.replace(day=1)
@@ -239,7 +226,6 @@ def month_range(d):
     else:
         last = d.replace(month=d.month + 1, day=1) - dt.timedelta(days=1)
     return first, last
-
 
 class Totals:
     def __init__(self, entries):
@@ -253,7 +239,6 @@ class Totals:
         self.penalty = sum(e.penalty_pay for e in self.days)
         self.total_pay = self.day_pay + self.extra_pay + self.bonus - self.penalty
         self.worked_days = len(self.days)
-
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS days (
@@ -289,7 +274,6 @@ _MIGRATIONS = [
     ("sync_status", "TEXT DEFAULT 'local'"),
 ]
 
-
 def default_data_dir():
     android = os.environ.get("ANDROID_APP_PATH") or os.environ.get("ANDROID_ARGUMENT")
     if android:
@@ -301,7 +285,6 @@ def default_data_dir():
         p = os.path.join(os.path.expanduser("~"), ".tabel_ucheta")
     os.makedirs(p, exist_ok=True)
     return p
-
 
 class Storage:
     def __init__(self, path=None):
@@ -437,6 +420,11 @@ class Storage:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         for k, v in (data.get("settings") or {}).items():
+            # Идентификация устройства не переносится из копии: иначе
+            # восстановление резервной копии, сделанной до регистрации,
+            # стирает employee_id/employee_token и разлогинивает устройство.
+            if k in ("employee_id", "employee_token", "secret_key"):
+                continue
             self.set(k, v)
         n = 0
         for row in data.get("days", []):

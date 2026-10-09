@@ -2,9 +2,11 @@
 """
 Табель — учёт рабочего времени и выплат.
 Windows-версия (Tkinter). Собирается в .exe через PyInstaller.
+ВЕРСИЯ 2.0.0 — синхронизация с сервером (Google Apps Script), одобрения дней.
 """
 import os
 import sys
+import queue
 import datetime as dt
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -22,22 +24,286 @@ import ui_kit as ui
 from ui_kit import Card, Field, Toggle, StatTile, FONT, F_BODY, F_BODY_B, F_SMALL
 import reports
 
+# === СИНХРОНИЗАЦИЯ С СЕРВЕРОМ ===
+try:
+    from sync_client import SyncClient
+    SYNC_AVAILABLE = True
+except ImportError:
+    SYNC_AVAILABLE = False
+
+SYNC_API_URL = ("https://script.google.com/macros/s/"
+                "AKfycbwDWAS8t__5y3WdFudGQa8OMyWxxBYl56tiJY5RHjR1EmBPiyTrlXUpa2CcmI-q3sQBdQ/exec")
+SYNC_API_TOKEN = "28096b2395454f05a7ce7a2b0fcfe3b2e58fd9bed8d5465db4560056a662659c"
+
+APPROVED_COLOR = "#249d07"
+POLL_MS = 30000          # период опроса очереди сервера
+QUEUE_MS = 100           # период разбора очереди событий UI
+
+
+def _asset(name):
+    """Путь к ассету: в onefile-сборке — из sys._MEIPASS, иначе — из папки assets."""
+    bases = []
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", "")
+        if meipass:
+            bases.append(os.path.join(meipass, "assets"))
+        bases.append(os.path.join(os.path.dirname(sys.executable), "assets"))
+    bases.append(os.path.join(HERE, "assets"))
+    for b in bases:
+        p = os.path.join(b, name)
+        if os.path.exists(p):
+            return p
+    return os.path.join(bases[0], name)
+
+
+def _ensure_pdf_fonts():
+    """Регистрирует DejaVu для reportlab из ассетов (в т.ч. из _MEIPASS).
+    reports._register_font() увидит имя 'Tab' и переиспользует его."""
+    try:
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+    except ImportError:
+        return
+    try:
+        reg = pdfmetrics.getRegisteredFontNames()
+        if "Tab" in reg:
+            return
+        regular = _asset("DejaVuSans.ttf")
+        bold = _asset("DejaVuSans-Bold.ttf")
+        if os.path.exists(regular):
+            pdfmetrics.registerFont(TTFont("Tab", regular))
+        if os.path.exists(bold):
+            pdfmetrics.registerFont(TTFont("TabB", bold))
+    except Exception:
+        pass
+
+
+def _parse_date_ru(text):
+    """'05.10.2026' / '05/10/2026' / '05-10-2026' / '5.10.2026' / '05.10.26' -> date.
+    None, если ввод не распознан или дата не существует."""
+    s = str(text or "").strip()
+    s = s.replace("/", ".").replace("-", ".").replace(" ", "")
+    if not s:
+        return None
+    parts = s.split(".")
+    if len(parts) != 3:
+        return None
+    if not all(p.isascii() and p.isdigit() for p in parts):
+        return None
+    d_s, m_s, y_s = parts
+    if len(y_s) == 2:
+        y_s = ("20" if int(y_s) < 70 else "19") + y_s
+    if not (len(d_s) in (1, 2) and len(m_s) in (1, 2) and len(y_s) == 4):
+        return None
+    try:
+        return dt.date(int(y_s), int(m_s), int(d_s))
+    except ValueError:
+        return None
+
+
+def _fmt_date_ru(iso):
+    try:
+        d = dt.date.fromisoformat(str(iso))
+        return "%02d.%02d.%d" % (d.day, d.month, d.year)
+    except (TypeError, ValueError):
+        return ""
+
+
+# ---------------------------------------------------------------- диалоги синхр.
+class RegDialog(tk.Toplevel):
+    """Первичная регистрация сотрудника: ФИО + дата рождения -> create_account."""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        app._reg_dialog = self
+        self.title("Первичная регистрация")
+        self.resizable(False, False)
+        self.transient(app)
+        self.configure(bg=T["surface"])
+        pad = tk.Frame(self, bg=T["surface"])
+        pad.pack(fill="both", padx=18, pady=16)
+        tk.Label(pad, text="Регистрация сотрудника", bg=T["surface"],
+                 fg=T["accent_dark"], font=ui.F_H2).pack(anchor="w")
+        tk.Label(pad, text="ФИО и дата рождения нужны серверу для поиска аккаунта "
+                           "при привязке телефона и восстановлении истории.",
+                 bg=T["surface"], fg=T["text_muted"], font=F_SMALL,
+                 wraplength=400, justify="left").pack(anchor="w", pady=(4, 10))
+        self.f_name = Field(pad, "Ф. И. О. работника", width=34, justify="left")
+        self.f_name.pack(fill="x")
+        self.f_birth = Field(pad, "Дата рождения", width=12, hint="ДД.ММ.ГГГГ")
+        self.f_birth.pack(fill="x", pady=(8, 0))
+        self.lbl_err = tk.Label(pad, text="", bg=T["surface"], fg=T["danger"],
+                                font=F_SMALL, wraplength=400, justify="left")
+        self.lbl_err.pack(anchor="w", pady=(8, 0))
+        row = tk.Frame(pad, bg=T["surface"])
+        row.pack(fill="x", pady=(10, 0))
+        self.btn_ok = ttk.Button(row, text="Зарегистрировать", style="Accent.TButton",
+                                 command=self.submit)
+        self.btn_ok.pack(side="left")
+        ttk.Button(row, text="Позже", style="Ghost.TButton",
+                   command=self.destroy).pack(side="left", padx=(8, 0))
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+
+    def submit(self):
+        name = self.f_name.get().strip()
+        birth = _parse_date_ru(self.f_birth.get())
+        if not name:
+            self.show_error("Укажите Ф. И. О. работника.")
+            return
+        if birth is None:
+            self.show_error("Дата рождения — в формате ДД.ММ.ГГГГ.")
+            return
+        self.btn_ok.config(state="disabled")
+        self.lbl_err.config(text="Отправка на сервер…", fg=T["text_muted"])
+        self.app.sync_client.send_async(
+            "create_account", name, birth.isoformat(),
+            callback=lambda r, n=name: self.app.sync_queue.put(("create", r, n)))
+
+    def show_error(self, text):
+        self.lbl_err.config(text=text, fg=T["danger"])
+        self.btn_ok.config(state="normal")
+
+    def destroy(self):
+        if getattr(self.app, "_reg_dialog", None) is self:
+            self.app._reg_dialog = None
+        super().destroy()
+
+
+class TokenDialog(tk.Toplevel):
+    """Показ employee_token с кнопкой копирования (для ввода на телефоне)."""
+
+    def __init__(self, app, token):
+        super().__init__(app)
+        self.app = app
+        self.token = token
+        self.title("Токен сотрудника")
+        self.resizable(False, False)
+        self.transient(app)
+        self.configure(bg=T["surface"])
+        pad = tk.Frame(self, bg=T["surface"])
+        pad.pack(fill="both", padx=18, pady=16)
+        tk.Label(pad, text="Аккаунт создан. Токен сотрудника:", bg=T["surface"],
+                 fg=T["accent_dark"], font=ui.F_H2).pack(anchor="w")
+        tk.Label(pad, text="Введите этот код на телефоне: «Настройки → "
+                           "Синхронизация с Windows → Привязать».",
+                 bg=T["surface"], fg=T["text_muted"], font=F_SMALL,
+                 wraplength=420, justify="left").pack(anchor="w", pady=(4, 10))
+        self.ent = tk.Entry(pad, font=("Consolas", 13), justify="center",
+                            bg=T["white"], fg=T["text"], relief="flat",
+                            highlightthickness=1, highlightbackground=T["border"],
+                            insertbackground=T["text"], state="readonly",
+                            readonlybackground=T["white"])
+        self.ent.pack(fill="x", ipady=7)
+        self.ent.config(state="normal")
+        self.ent.insert(0, token)
+        self.ent.config(state="readonly")
+        row = tk.Frame(pad, bg=T["surface"])
+        row.pack(fill="x", pady=(12, 0))
+        ttk.Button(row, text="Скопировать", style="Accent.TButton",
+                   command=self.copy).pack(side="left")
+        ttk.Button(row, text="Закрыть", style="Ghost.TButton",
+                   command=self.destroy).pack(side="left", padx=(8, 0))
+
+    def copy(self):
+        self.clipboard_clear()
+        self.clipboard_append(self.token)
+        ui.toast(self.app, "Токен скопирован в буфер обмена")
+
+
+class RestoreDialog(tk.Toplevel):
+    """Восстановление аккаунта на этом ПК: restore_account(device_type='windows')."""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        app._restore_dialog = self
+        self.title("Восстановление аккаунта")
+        self.resizable(False, False)
+        self.transient(app)
+        self.configure(bg=T["surface"])
+        pad = tk.Frame(self, bg=T["surface"])
+        pad.pack(fill="both", padx=18, pady=16)
+        tk.Label(pad, text="Перенос аккаунта на этот компьютер", bg=T["surface"],
+                 fg=T["accent_dark"], font=ui.F_H2).pack(anchor="w")
+        tk.Label(pad, text="Укажите те же ФИО и дату рождения, что при регистрации. "
+                           "История дней и закрытые недели будут загружены с сервера. "
+                           "Внимание: старый компьютер будет отвязан от аккаунта.",
+                 bg=T["surface"], fg=T["text_muted"], font=F_SMALL,
+                 wraplength=420, justify="left").pack(anchor="w", pady=(4, 10))
+        self.f_name = Field(pad, "Ф. И. О. работника", width=34, justify="left")
+        self.f_name.set(app.db.get("employee", ""))
+        self.f_name.pack(fill="x")
+        self.f_birth = Field(pad, "Дата рождения", width=12, hint="ДД.ММ.ГГГГ")
+        self.f_birth.pack(fill="x", pady=(8, 0))
+        self.lbl_err = tk.Label(pad, text="", bg=T["surface"], fg=T["danger"],
+                                font=F_SMALL, wraplength=420, justify="left")
+        self.lbl_err.pack(anchor="w", pady=(8, 0))
+        row = tk.Frame(pad, bg=T["surface"])
+        row.pack(fill="x", pady=(10, 0))
+        self.btn_ok = ttk.Button(row, text="Восстановить", style="Accent.TButton",
+                                 command=self.submit)
+        self.btn_ok.pack(side="left")
+        ttk.Button(row, text="Отмена", style="Ghost.TButton",
+                   command=self.destroy).pack(side="left", padx=(8, 0))
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+
+    def submit(self):
+        name = self.f_name.get().strip()
+        birth = _parse_date_ru(self.f_birth.get())
+        if not name:
+            self.show_error("Укажите Ф. И. О. работника.")
+            return
+        if birth is None:
+            self.show_error("Дата рождения — в формате ДД.ММ.ГГГГ.")
+            return
+        self.btn_ok.config(state="disabled")
+        self.lbl_err.config(text="Запрос к серверу…", fg=T["text_muted"])
+        self.app.sync_client.send_async(
+            "restore_account", name, birth.isoformat(), "windows",
+            callback=lambda r: self.app.sync_queue.put(("restore", r)))
+
+    def show_error(self, text):
+        self.lbl_err.config(text=text, fg=T["danger"])
+        self.btn_ok.config(state="normal")
+
+    def destroy(self):
+        if getattr(self.app, "_restore_dialog", None) is self:
+            self.app._restore_dialog = None
+        super().destroy()
+
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Табель — учёт рабочего времени и выплат")
+        self.title("Табель 2.0 — учёт рабочего времени и выплат")
         self.geometry("1180x760")
         self.minsize(1040, 700)
         self.configure(bg=T["bg"])
         try:
-            self.iconbitmap(os.path.join(HERE, "assets", "icon.ico"))
+            self.iconbitmap(_asset("icon.ico"))
         except Exception:
             pass
 
         self.db = Storage()
         self.current = dt.date.today()
         self._loading = False
+        self._locked = False
+        self._reg_dialog = None
+        self._restore_dialog = None
+        self._sync_last_error = ""
+        self._after_poll = None
+        self._after_queue = None
+
+        # --- сетевой слой: device_id.txt рядом с БД ---
+        self.sync_queue = queue.Queue()
+        self.sync_client = None
+        if SYNC_AVAILABLE:
+            dev_file = os.path.join(os.path.dirname(self.db.path), "device_id.txt")
+            self.sync_client = SyncClient(SYNC_API_URL, SYNC_API_TOKEN, dev_file)
+            emp_id, emp_tok = self._creds()
+            if emp_id and emp_tok:
+                self.sync_client.set_credentials(emp_id, emp_tok)
 
         ui.install_styles(self)
         self._build_header()
@@ -48,6 +314,307 @@ class App(tk.Tk):
         self.bind("<Prior>", lambda e: self.shift_day(-1))
         self.bind("<Next>", lambda e: self.shift_day(1))
 
+        # --- таймеры сети: разбор очереди и поллинг ---
+        self._after_queue = self.after(QUEUE_MS, self._queue_loop)
+        self._after_poll = self.after(3000, self._poll_loop)
+        if SYNC_AVAILABLE and not self._has_creds():
+            self.after(600, self.open_registration)
+
+    # ------------------------------------------------------------- синхронизация
+    def _creds(self):
+        emp_id = self.db.get("employee_id", "")
+        emp_tok = self.db.get("employee_token", "") or self.db.get("secret_key", "")
+        return emp_id, emp_tok
+
+    def _has_creds(self):
+        emp_id, emp_tok = self._creds()
+        return bool(emp_id and emp_tok)
+
+    def _poll_loop(self):
+        """Раз в 30 секунд: опрос очереди сервера в daemon-потоке."""
+        self._after_poll = None
+        try:
+            if self.sync_client and self._has_creds():
+                self.sync_client.send_async(
+                    "poll_commands",
+                    callback=lambda r: self.sync_queue.put(("poll", r)))
+        except Exception as ex:
+            self.sync_queue.put(("poll", {"ok": False, "error": str(ex)}))
+        self._after_poll = self.after(POLL_MS, self._poll_loop)
+
+    def _queue_loop(self):
+        """Главный поток разбирает очередь событий от сетевых потоков."""
+        try:
+            while True:
+                event = self.sync_queue.get_nowait()
+                kind, rest = event[0], event[1:]
+                try:
+                    if kind == "poll":
+                        self._handle_poll(rest[0])
+                    elif kind == "create":
+                        self._on_create_result(rest[0], rest[1] if len(rest) > 1 else "")
+                    elif kind == "restore":
+                        self._on_restore_result(rest[0])
+                    elif kind == "approved_sent":
+                        self._on_approved_sent(rest[0])
+                except Exception as ex:
+                    self._sync_last_error = str(ex)
+        except queue.Empty:
+            pass
+        except Exception as ex:
+            self._sync_last_error = str(ex)
+        self._after_queue = self.after(QUEUE_MS, self._queue_loop)
+
+    def _handle_poll(self, result):
+        if not result.get("ok"):
+            err = str(result.get("error", ""))
+            if err not in ("no_connection", "timeout", "device not registered"):
+                self._sync_last_error = err
+            return
+        self._sync_last_error = ""
+        changed = False
+        touch_current = False
+        for item in result.get("items", []) or []:
+            cmd = item.get("command")
+            payload = item.get("payload") or {}
+            try:
+                if cmd == "day_updated":
+                    if self._apply_day_updated(payload):
+                        changed = True
+                        touch_current = touch_current or (
+                            payload.get("date") == self.current.isoformat())
+                elif cmd in ("payment_date_entered", "payment_received"):
+                    if self._apply_payment(payload):
+                        changed = True
+                        touch_current = True
+            except Exception as ex:
+                self._sync_last_error = str(ex)
+        if changed:
+            if touch_current:
+                self.load_date(self.current)
+            self.refresh_week()
+            self.refresh_history()
+            ui.toast(self, "Получены обновления с телефона")
+
+    def _apply_day_updated(self, payload):
+        """Применяет день с телефона, только если version больше локальной."""
+        date = str(payload.get("date") or "").strip()
+        entry = payload.get("entry") or {}
+        try:
+            version = int(payload.get("version") or 1)
+        except (TypeError, ValueError):
+            return False
+        if not date or not isinstance(entry, dict) or not entry:
+            return False
+        local = self.db.load_day(date)
+        local_version = 0 if local.is_empty else int(local.version or 1)
+        if version <= local_version:
+            return False
+        data = dict(entry)
+        data.pop("id", None)
+        data["date"] = date
+        data["version"] = version
+        data["sync_status"] = "synced"
+        for k in ("lunch_on", "extra_on", "extra_use_fixed", "penalty_on"):
+            data.setdefault(k, False)
+        data.setdefault("approved_at", local.approved_at or "")
+        data.setdefault("rate", self.db.get_float("rate", 250))
+        data.setdefault("extra_rate", self.db.get_float("extra_rate", 250))
+        e = DayEntry(**data)
+        self.db.save_day(e)
+        return True
+
+    def _apply_payment(self, payload):
+        """payment_date_entered / payment_received -> set_received(неделя, дата)."""
+        week = str(payload.get("week_id") or "").strip()
+        pay_date = str(payload.get("payment_date") or "").strip()
+        if not week:
+            return False
+        try:
+            monday = dt.date.fromisoformat(week)
+        except ValueError:
+            return False
+        if self.db.week_received(monday):
+            return False
+        if not pay_date:
+            pay_date = self.db.received_on(monday) or dt.date.today().isoformat()
+        self.db.set_received(monday, pay_date)
+        return True
+
+    def _on_create_result(self, result, name):
+        dlg = self._reg_dialog
+        if result.get("ok") and result.get("employee_id"):
+            emp_id = str(result.get("employee_id", ""))
+            emp_tok = str(result.get("employee_token", ""))
+            self.db.set("employee_id", emp_id)
+            self.db.set("employee_token", emp_tok)
+            self.db.set("secret_key", emp_tok)
+            if name and not self.db.get("employee", ""):
+                self.db.set("employee", name)
+            if self.sync_client:
+                self.sync_client.set_credentials(emp_id, emp_tok)
+            if dlg is not None:
+                try:
+                    dlg.destroy()
+                except Exception:
+                    pass
+            self._update_sync_panel()
+            TokenDialog(self, emp_tok)
+        else:
+            err = str(result.get("error", "неизвестная ошибка"))
+            self._sync_last_error = err
+            if dlg is not None:
+                dlg.show_error("Ошибка сервера: " + err)
+            else:
+                ui.toast(self, "Регистрация не удалась: " + err, "err")
+
+    def _on_restore_result(self, result):
+        dlg = self._restore_dialog
+        if result.get("ok") and result.get("status") == "restored":
+            days, weeks = self._import_server_state(result)
+            if dlg is not None:
+                try:
+                    dlg.destroy()
+                except Exception:
+                    pass
+            self._update_sync_panel()
+            ui.toast(self, "Аккаунт восстановлен: дней %d, недель %d" % (days, weeks))
+        else:
+            err = str(result.get("error", "неизвестная ошибка"))
+            self._sync_last_error = err
+            if dlg is not None:
+                dlg.show_error("Ошибка сервера: " + err)
+            else:
+                ui.toast(self, "Восстановление не удалось: " + err, "err")
+
+    def _import_server_state(self, result):
+        """Импорт timesheet_state / payment_state из ответа restore_account."""
+        emp_id = str(result.get("employee_id", ""))
+        emp_tok = str(result.get("employee_token", ""))
+        if emp_id:
+            self.db.set("employee_id", emp_id)
+        if emp_tok:
+            self.db.set("employee_token", emp_tok)
+            self.db.set("secret_key", emp_tok)
+        if self.sync_client and emp_id and emp_tok:
+            self.sync_client.set_credentials(emp_id, emp_tok)
+
+        days_imported = 0
+        for item in result.get("timesheet_state", []) or []:
+            date = str(item.get("date") or "").strip()
+            try:
+                version = int(item.get("version") or 1)
+            except (TypeError, ValueError):
+                version = 1
+            payload = item.get("payload") or {}
+            entry_data = payload.get("entry") or {}
+            if not date or not isinstance(entry_data, dict) or not entry_data:
+                continue
+            local = self.db.load_day(date)
+            local_version = 0 if local.is_empty else int(local.version or 1)
+            if local_version >= version:
+                continue
+            data = dict(entry_data)
+            data.pop("id", None)
+            data["date"] = date
+            data["version"] = version
+            data["sync_status"] = "synced"
+            for k in ("lunch_on", "extra_on", "extra_use_fixed", "penalty_on"):
+                data.setdefault(k, False)
+            data.setdefault("approved_at", local.approved_at or "")
+            data.setdefault("rate", self.db.get_float("rate", 250))
+            data.setdefault("extra_rate", self.db.get_float("extra_rate", 250))
+            try:
+                self.db.save_day(DayEntry(**data))
+                days_imported += 1
+            except Exception:
+                continue
+
+        weeks_imported = 0
+        for item in result.get("payment_state", []) or []:
+            week_id = str(item.get("week_id") or "").strip()
+            payment_date = str(item.get("payment_date") or "").strip()
+            confirmed = bool(item.get("payment_confirmed"))
+            if not week_id or not confirmed or not payment_date:
+                continue
+            try:
+                monday = dt.date.fromisoformat(week_id)
+            except ValueError:
+                continue
+            if not self.db.week_received(monday):
+                self.db.set_received(monday, payment_date)
+                weeks_imported += 1
+
+        self.load_date(self.current)
+        self.refresh_week()
+        self.refresh_history()
+        self.load_settings()
+        return days_imported, weeks_imported
+
+    def _on_approved_sent(self, result):
+        if result.get("ok") and result.get("status") == "synced":
+            ui.toast(self, "Одобрение доставлено на телефон")
+        elif result.get("ok") and result.get("status") == "conflict":
+            ui.toast(self, "Сервер отклонил одобрение: запись изменилась на "
+                           "телефоне (version не совпадает)", "warn")
+        else:
+            err = str(result.get("error", "неизвестная ошибка"))
+            self._sync_last_error = err
+            ui.toast(self, "Одобрено локально; сервер недоступен: " + err, "warn")
+
+    # ---------------------------------------------------------- диалоги/панели
+    def open_registration(self):
+        if not (SYNC_AVAILABLE and self.sync_client):
+            return
+        if self._reg_dialog is not None:
+            try:
+                self._reg_dialog.lift()
+                return
+            except Exception:
+                self._reg_dialog = None
+        RegDialog(self)
+
+    def open_restore(self):
+        if not (SYNC_AVAILABLE and self.sync_client):
+            ui.toast(self, "Синхронизация недоступна в этой сборке", "warn")
+            return
+        if self._restore_dialog is not None:
+            try:
+                self._restore_dialog.lift()
+                return
+            except Exception:
+                self._restore_dialog = None
+        RestoreDialog(self)
+
+    def show_token(self):
+        tok = self.db.get("employee_token", "") or self.db.get("secret_key", "")
+        if tok:
+            TokenDialog(self, tok)
+        else:
+            messagebox.showinfo("Токен", "Токен ещё не получен: выполните регистрацию.")
+
+    def _update_sync_panel(self):
+        lbl_dev = getattr(self, "lbl_dev", None)
+        lbl_reg = getattr(self, "lbl_reg", None)
+        if lbl_dev is None or lbl_reg is None:
+            return
+        if not (SYNC_AVAILABLE and self.sync_client):
+            lbl_dev.config(text="")
+            lbl_reg.config(text="Синхронизация недоступна в этой сборке",
+                           fg=T["text_muted"])
+            return
+        lbl_dev.config(text="ID устройства: " + self.sync_client.device_id)
+        emp_id, _ = self._creds()
+        if emp_id:
+            lbl_reg.config(text="Статус: зарегистрирован (employee_id %s…)"
+                           % emp_id[:8], fg=APPROVED_COLOR)
+        else:
+            lbl_reg.config(text="Статус: не зарегистрирован — выполните "
+                                 "первичную регистрацию", fg=T["warn"])
+        if self._sync_last_error:
+            lbl_reg.config(text=lbl_reg.cget("text") +
+                           "  •  ошибка связи: " + self._sync_last_error)
+
     # ------------------------------------------------------------------ шапка
     def _build_header(self):
         head = tk.Frame(self, bg=T["accent"], height=74)
@@ -56,7 +623,7 @@ class App(tk.Tk):
 
         left = tk.Frame(head, bg=T["accent"])
         left.pack(side="left", padx=22)
-        tk.Label(left, text="ТАБЕЛЬ", bg=T["accent"], fg="white",
+        tk.Label(left, text="ТАБЕЛЬ 2.0", bg=T["accent"], fg="white",
                  font=(FONT, 18, "bold")).pack(anchor="w", pady=(14, 0))
         tk.Label(left, text="учёт рабочего времени и выплат", bg=T["accent"],
                  fg="#DCEBF8", font=F_SMALL).pack(anchor="w")
@@ -254,16 +821,25 @@ class App(tk.Tk):
         c_act.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         pad = tk.Frame(c_act, bg=T["surface"])
         pad.pack(fill="x", padx=14, pady=12)
-        ttk.Button(pad, text="СОХРАНИТЬ ДЕНЬ   (Ctrl+S)", style="Accent.TButton",
-                   command=self.save_day).pack(fill="x")
+        self.btn_save = ttk.Button(pad, text="СОХРАНИТЬ ДЕНЬ   (Ctrl+S)",
+                                   style="Accent.TButton", command=self.save_day)
+        self.btn_save.pack(fill="x")
         row2 = tk.Frame(pad, bg=T["surface"])
         row2.pack(fill="x", pady=(8, 0))
         ttk.Button(row2, text="Заполнить по умолчанию", style="Ghost.TButton",
                    command=self.fill_defaults).pack(side="left", expand=True, fill="x",
                                                     padx=(0, 4))
-        ttk.Button(row2, text="Очистить день", style="Danger.TButton",
-                   command=self.clear_day).pack(side="left", expand=True, fill="x",
-                                                padx=(4, 0))
+        self.btn_clear = ttk.Button(row2, text="Очистить день", style="Danger.TButton",
+                                    command=self.clear_day)
+        self.btn_clear.pack(side="left", expand=True, fill="x", padx=(4, 0))
+        row3 = tk.Frame(pad, bg=T["surface"])
+        row3.pack(fill="x", pady=(8, 0))
+        self.btn_approve = ttk.Button(row3, text="✓  ОДОБРИТЬ ДЕНЬ",
+                                      style="Ghost.TButton", command=self.approve_day)
+        self.btn_approve.pack(side="left")
+        self.lbl_approve = tk.Label(row3, text="", bg=T["surface"], fg=T["text_muted"],
+                                    font=F_SMALL)
+        self.lbl_approve.pack(side="left", padx=(12, 0))
 
         # мини-итог недели
         c_wk = Card(right, "Текущая неделя")
@@ -303,6 +879,8 @@ class App(tk.Tk):
                    command=lambda: self.shift_week(1)).pack(side="left", padx=6)
         ttk.Button(bar, text="Текущая неделя", style="Ghost.TButton",
                    command=lambda: self.load_date(dt.date.today())).pack(side="left")
+        ttk.Button(bar, text="Одобрить выбранный день", style="Ghost.TButton",
+                   command=self.approve_selected).pack(side="left", padx=(8, 0))
         ttk.Button(bar, text="Excel: неделя", style="Ghost.TButton",
                    command=lambda: self.export("week", "xlsx")).pack(side="right", padx=(4, 10))
         ttk.Button(bar, text="PDF: неделя", style="Ghost.TButton",
@@ -311,11 +889,11 @@ class App(tk.Tk):
                    command=lambda: self.export("month", "pdf")).pack(side="right", padx=4)
 
         cols = ("wd", "date", "time", "hours", "xtime", "xhours", "works",
-                "pay", "xpay", "bonus", "total")
+                "pay", "xpay", "bonus", "total", "appr")
         titles = ("День", "Дата", "Время работы", "Кол-во часов", "Доп. время",
                   "Доп. часы", "Объём и качество работ", "Оплата за день",
-                  "Доп. работы", "Премия", "Итого")
-        widths = (46, 74, 118, 96, 108, 84, 330, 112, 100, 84, 110)
+                  "Доп. работы", "Премия", "Итого", "Одобрено")
+        widths = (46, 74, 118, 96, 108, 84, 300, 112, 100, 84, 110, 76)
         wrap = tk.Frame(root, bg=T["surface"], highlightbackground=T["border"],
                         highlightthickness=1)
         wrap.grid(row=1, column=0, sticky="nsew")
@@ -348,6 +926,13 @@ class App(tk.Tk):
             t.grid(row=0, column=i, sticky="ew", padx=4)
             self.w_tiles[k] = t
 
+        paybar = tk.Frame(root, bg=T["surface"], highlightbackground=T["border"],
+                          highlightthickness=1)
+        paybar.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        self.lbl_week_pay = tk.Label(paybar, text="", bg=T["surface"], fg=T["text"],
+                                     font=F_BODY_B, anchor="w", padx=12, pady=8)
+        self.lbl_week_pay.pack(fill="x")
+
     # --------------------------------------------------------- вкладка ИСТОРИЯ
     def _build_hist_tab(self):
         root = self.tab_hist
@@ -379,7 +964,7 @@ class App(tk.Tk):
             self.htree.heading(c, text=t)
             self.htree.column(c, width=w, anchor="center" if c != "works" else "w",
                               stretch=(c == "works"))
-        vs = ttk.Scrollbar(main.body, orient="vertical", command=self.htree.yview)
+        vs = tk.Scrollbar(main.body, orient="vertical", command=self.htree.yview)
         self.htree.configure(yscrollcommand=vs.set)
         self.htree.pack(side="left", fill="both", expand=True)
         vs.pack(side="right", fill="y")
@@ -434,6 +1019,25 @@ class App(tk.Tk):
                    command=self.restore).pack(fill="x", pady=3)
         ttk.Button(c4.body, text="Открыть папку с данными", style="Ghost.TButton",
                    command=self.open_folder).pack(fill="x", pady=3)
+
+        c5 = Card(root, "Синхронизация и аккаунт")
+        c5.grid(row=2, column=0, columnspan=2, sticky="new", pady=6)
+        b5 = c5.body
+        self.lbl_reg = tk.Label(b5, text="", bg=T["surface"], fg=T["text"],
+                                font=F_BODY_B, anchor="w")
+        self.lbl_reg.pack(fill="x")
+        self.lbl_dev = tk.Label(b5, text="", bg=T["surface"], fg=T["text_muted"],
+                                font=("Consolas", 8), anchor="w", wraplength=760,
+                                justify="left")
+        self.lbl_dev.pack(fill="x", pady=(2, 8))
+        rowb = tk.Frame(b5, bg=T["surface"])
+        rowb.pack(fill="x")
+        ttk.Button(rowb, text="Регистрация (новый аккаунт)", style="Accent.TButton",
+                   command=self.open_registration).pack(side="left")
+        ttk.Button(rowb, text="Показать токен", style="Ghost.TButton",
+                   command=self.show_token).pack(side="left", padx=(8, 0))
+        ttk.Button(rowb, text="Восстановить аккаунт", style="Ghost.TButton",
+                   command=self.open_restore).pack(side="left", padx=(8, 0))
 
         self.load_settings()
 
@@ -520,7 +1124,43 @@ class App(tk.Tk):
 
         self._loading = False
         self.recalc()
+        self._set_locked(bool(e.approved_at) or self.db.week_received(d), e)
         self.refresh_week()
+
+    def _set_locked(self, locked, e=None):
+        """Блокировка формы: день одобрен или неделя закрыта окончательно."""
+        self._locked = locked
+        st = "disabled" if locked else "normal"
+        for w in (self.f_start.entry, self.f_end.entry, self.f_lunch.entry,
+                  self.f_xstart.entry, self.f_xend.entry, self.f_xrate.entry,
+                  self.f_xfixed.entry, self.f_bonus.entry,
+                  self.txt_works, self.txt_xworks):
+            w.config(state=st)
+        for t in (self.t_lunch, self.t_extra, self.t_xfixed):
+            t.cb.config(state=st)
+        self.btn_save.config(state=st)
+        self.btn_clear.config(state=st)
+
+        if e is None:
+            e = self.db.load_day(self.current)
+        if locked and self.db.week_received(self.current):
+            rec = _fmt_date_ru(self.db.received_on(self.current))
+            self.lbl_approve.config(
+                text="Неделя закрыта окончательно (получена %s) — запись неизменяема"
+                     % (rec or "—"), fg=T["text_muted"])
+            self.btn_approve.config(state="disabled")
+        elif e.approved_at:
+            self.lbl_approve.config(
+                text="✓ Одобрено " + e.approved_at[:16].replace("T", " "),
+                fg=APPROVED_COLOR)
+            self.btn_approve.config(state="disabled")
+        elif e.is_empty:
+            self.lbl_approve.config(text="Одобрение доступно после заполнения дня",
+                                    fg=T["text_muted"])
+            self.btn_approve.config(state="disabled")
+        else:
+            self.lbl_approve.config(text="День не одобрен", fg=T["warn"])
+            self.btn_approve.config(state="normal")
 
     def shift_day(self, n):
         self.load_date(self.current + dt.timedelta(days=n))
@@ -534,6 +1174,10 @@ class App(tk.Tk):
         self.recalc()
 
     def save_day(self):
+        if getattr(self, "_locked", False):
+            ui.toast(self, "Запись одобрена или неделя закрыта — изменения запрещены",
+                     "warn")
+            return
         e = self.collect()
         if e.start is not None and e.end is None:
             messagebox.showwarning("Не хватает данных", "Укажите время окончания работы.")
@@ -552,12 +1196,59 @@ class App(tk.Tk):
         self.refresh_history()
 
     def clear_day(self):
+        if getattr(self, "_locked", False):
+            ui.toast(self, "Запись одобрена или неделя закрыта — удаление запрещено",
+                     "warn")
+            return
         if messagebox.askyesno("Очистить день",
                                "Удалить запись за %02d.%02d.%d?" % (
                                    self.current.day, self.current.month, self.current.year)):
             self.db.delete_day(self.current)
             self.load_date(self.current)
             ui.toast(self, "Запись удалена", "warn")
+
+    # ------------------------------------------------------------- одобрения
+    def approve_date(self, d):
+        """Локальное одобрение + отправка day_approved с текущей version."""
+        e = self.db.load_day(d)
+        if e.is_empty:
+            ui.toast(self, "Пустой день одобрять нельзя", "warn")
+            return False
+        if e.approved_at:
+            ui.toast(self, "День уже одобрен", "warn")
+            return False
+        if self.db.week_received(d):
+            ui.toast(self, "Неделя закрыта окончательно — одобрение недоступно", "warn")
+            return False
+        self.db.mark_approved(d)
+        version = self.db.get_day_version(d)
+        if d == self.current:
+            self.load_date(self.current)
+        emp_id, emp_tok = self._creds()
+        if SYNC_AVAILABLE and self.sync_client and emp_id and emp_tok:
+            self.sync_client.send_async(
+                "day_approved", emp_id, emp_tok, d.isoformat(), version,
+                callback=lambda r: self.sync_queue.put(("approved_sent", r)))
+            ui.toast(self, "День одобрен ✓ (отправлено на телефон)")
+        else:
+            ui.toast(self, "День одобрен ✓ (локально, без сервера)")
+        return True
+
+    def approve_day(self):
+        self.approve_date(self.current)
+
+    def approve_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            ui.toast(self, "Выберите строку дня в таблице недели", "warn")
+            return
+        iid = sel[0]
+        if not iid.startswith("d:"):
+            ui.toast(self, "Выберите строку дня, а не итог", "warn")
+            return
+        d = dt.date.fromisoformat(iid[2:])
+        if self.approve_date(d):
+            self.refresh_week()
 
     def _tree_open_day(self, _e):
         sel = self.tree.selection()
@@ -611,19 +1302,32 @@ class App(tk.Tk):
                 fmt_money(e.extra_pay) if e.extra_pay else "—",
                 fmt_money(e.bonus) if e.bonus else "—",
                 fmt_money(e.total_pay) if e.total_pay else "—",
+                "✓" if e.approved_at else ("—" if not e.is_empty else ""),
             ))
         t = Totals(days)
         self.tree.insert("", "end", iid="total", tags=("total",), values=(
             "", "ИТОГО", "", fmt_hm_short(t.work_min), "", fmt_hm_short(t.extra_min),
             "Отработано дней: %d   •   всего %s" % (t.worked_days, fmt_hm(t.total_min)),
             fmt_money(t.day_pay), fmt_money(t.extra_pay), fmt_money(t.bonus),
-            fmt_money(t.total_pay)))
+            fmt_money(t.total_pay), ""))
 
         self.w_tiles["days"].set(str(t.worked_days))
         self.w_tiles["hours"].set(fmt_hm(t.work_min))
         self.w_tiles["xhours"].set(fmt_hm(t.extra_min))
         self.w_tiles["bonus"].set(fmt_money(t.bonus))
         self.w_tiles["total"].set(fmt_money(t.total_pay))
+
+        # строка выплаты: одобрено X из Y, дата получения, подпись
+        filled = [e for e in days if not e.is_empty]
+        appr = sum(1 for e in filled if e.approved_at)
+        closed = self.db.week_received(self.current)
+        rec = _fmt_date_ru(self.db.received_on(self.current))
+        sig = "✓" if closed else "—"
+        self.lbl_week_pay.config(
+            text="Одобрено дней: %d из %d   •   Дата получения: %s   •   Подпись: %s%s"
+                 % (appr, len(filled), rec or "—", sig,
+                    "   •   неделя неизменяема" if closed else ""),
+            fg=APPROVED_COLOR if closed else T["text"])
 
         for w in self.wk_mini.winfo_children():
             w.destroy()
@@ -730,6 +1434,7 @@ class App(tk.Tk):
         self.s_lunch.set(self.db.get("default_lunch", "60"))
         self.s_emp.set(self.db.get("employee", ""))
         self.s_org.set(self.db.get("organization", ""))
+        self._update_sync_panel()
 
     def save_settings(self):
         self.db.set("rate", _f(self.s_rate.get(), 250))
@@ -792,6 +1497,7 @@ class App(tk.Tk):
             if fmt == "xlsx":
                 reports.export_xlsx(path, title, days, meta)
             else:
+                _ensure_pdf_fonts()
                 reports.export_pdf(path, title, days, meta)
         except ImportError as ex:
             messagebox.showerror("Нет библиотеки", str(ex))
@@ -803,16 +1509,25 @@ class App(tk.Tk):
             except AttributeError:
                 os.system('xdg-open "%s"' % path)
 
+    # ---------------------------------------------------------------- закрытие
     def _on_close(self):
+        for aid in (self._after_poll, self._after_queue):
+            if aid:
+                try:
+                    self.after_cancel(aid)
+                except Exception:
+                    pass
+        self._after_poll = None
+        self._after_queue = None
         try:
-            e = self.collect()
-            if not e.is_empty:
-                self.db.save_day(e)
+            if not getattr(self, "_locked", False):
+                e = self.collect()
+                if not e.is_empty:
+                    self.db.save_day(e)
         except Exception:
             pass
         self.db.close()
         self.destroy()
-
 
 def _f(text, default=0.0):
     try:
@@ -820,11 +1535,9 @@ def _f(text, default=0.0):
     except (TypeError, ValueError):
         return default
 
-
 def _num(v):
     v = float(v or 0)
     return str(int(v)) if abs(v - int(v)) < 1e-9 else ("%.2f" % v)
-
 
 if __name__ == "__main__":
     App().mainloop()

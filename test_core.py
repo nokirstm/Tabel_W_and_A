@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """Проверка ядра на реальных цифрах из бумажной ведомости и записей за 17–21.08."""
-import sys, os, datetime as dt
+import sys, os, tempfile, datetime as dt
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "core"))
 from timecard_core import (DayEntry, Storage, Totals, parse_time, parse_duration,
                            fmt_hm_short, fmt_money, week_title)
@@ -32,7 +32,9 @@ for s, e, l, exp_hm, exp_pay in rows:
     check("с %s по %s" % (s, e), (fmt_hm_short(d.work_min), round(d.day_pay)), (exp_hm, exp_pay))
 
 print("\n== неделя 17–21.08 из твоих записей ==")
-db = "/tmp/test_tabel.db"
+# Кроссплатформенный путь: на Windows "/tmp/..." превращается в D:\tmp\...
+# и падает с OperationalError, потому что такой папки нет.
+db = os.path.join(tempfile.gettempdir(), "test_tabel.db")
 if os.path.exists(db): os.remove(db)
 st = Storage(db)
 data = [

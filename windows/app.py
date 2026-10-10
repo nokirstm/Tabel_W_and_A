@@ -1260,9 +1260,10 @@ class App(tk.Tk):
             self.btn_approve.config(state="disabled")
         elif e.approved_at:
             self.lbl_approve.config(
-                text="✓ Одобрено " + e.approved_at[:16].replace("T", " "),
+                text="✓ Одобрено " + e.approved_at[:16].replace("T", " ") +
+                   " (клик — дослать одобрение на телефон)",
                 fg=APPROVED_COLOR)
-            self.btn_approve.config(state="disabled")
+            self.btn_approve.config(state="normal")
         elif e.is_empty:
             self.lbl_approve.config(text="Одобрение доступно после заполнения дня",
                                     fg=T["text_muted"])
@@ -1324,7 +1325,15 @@ class App(tk.Tk):
             ui.toast(self, "Пустой день одобрять нельзя", "warn")
             return False
         if e.approved_at:
-            ui.toast(self, "День уже одобрен", "warn")
+            version = self.db.get_day_version(d)
+            emp_id, emp_tok = self._creds()
+            if SYNC_AVAILABLE and self.sync_client and emp_id and emp_tok:
+                self.sync_client.send_async(
+                    "day_approved", emp_id, emp_tok, d.isoformat(), version,
+                    callback=lambda r: self.sync_queue.put(("approved_sent", r)))
+                ui.toast(self, "День уже одобрен: одобрение дослано на телефон")
+            else:
+                ui.toast(self, "День уже одобрен (локально, без сервера)", "warn")
             return False
         if self.db.week_received(d):
             ui.toast(self, "Неделя закрыта окончательно — одобрение недоступно", "warn")

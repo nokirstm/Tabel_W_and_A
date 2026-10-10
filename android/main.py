@@ -4,7 +4,8 @@
 Android-версия (Kivy). Собирается в .apk через buildozer.
 Использует то же ядро расчётов, что и Windows-версия: core/timecard_core.py
 
-ВЕРСИЯ 2.0.0 - синхронизация с сервером, защиты экрана дня, всеядный ввод
+ВЕРСИЯ 2.0.0 - синхронизация с сервером, защиты экрана дня, всеядный ввод,
+самовосстановление софт-клавиатуры
 """
 import os
 import sys
@@ -169,6 +170,9 @@ class TInput(TextInput):
 
     def _focus(self, _w, val):
         self._c.rgba = C["accent"] if val else C["border"]
+        if val:
+            # Самовосстановление софт-клавиатуры при каждом фокусе поля.
+            Clock.schedule_once(lambda *_: _restart_soft_keyboard(), 0.1)
 
 
 class FlatButton(Button):
@@ -289,6 +293,25 @@ def toast(text, kind="ok"):
     Clock.schedule_once(lambda *_: Window.remove_widget(lbl), 2.2)
 
 
+def _restart_soft_keyboard():
+    """Пересоздаёт связь софт-клавиатуры с окном.
+    После нативных диалогов Android и системных пикеров поля Kivy могут
+    перестать принимать ввод с клавиатуры; этот вызов чинит соединение."""
+    if not os.environ.get("ANDROID_ARGUMENT"):
+        return
+    try:
+        from jnius import autoclass
+        activity = autoclass("org.kivy.android.PythonActivity").mActivity
+        Context = autoclass("android.content.Context")
+        imm = activity.getSystemService(Context.INPUT_METHOD_SERVICE)
+        view = activity.getCurrentFocus()
+        if view is None:
+            view = activity.getWindow().getDecorView()
+        imm.restartInput(view)
+    except Exception:
+        pass
+
+
 # ------------------------------------------------------------------ экран ДЕНЬ
 class DayScreen(Screen):
     def __init__(self, app, **kw):
@@ -372,9 +395,9 @@ class DayScreen(Screen):
         self._works_text = ""
         self._extra_works_text = ""
         self.lbl_works = FlatButton("что делал на работе…", height=130,
-                                   bg=C["white"], fg=C["text"], size=15, font=FONT,
-                                   halign="left", valign="top", padding=(dp(12), dp(12)),
-                                   on_release=lambda *_: self._open_works_editor())
+                                    bg=C["white"], fg=C["text"], size=15, font=FONT,
+                                    halign="left", valign="top", padding=(dp(12), dp(12)),
+                                    on_release=lambda *_: self._open_works_editor())
         self.lbl_works.bind(size=lambda w, size: setattr(w, "text_size", (size[0]-dp(24), size[1]-dp(24))))
         c3.add_widget(self.lbl_works)
         self.btn_works = FlatButton("✎  Редактировать описание работ",
@@ -417,6 +440,7 @@ class DayScreen(Screen):
         self.extra_box.add_widget(self.btn_xworks)
         c4.add_widget(self.extra_box)
         body.add_widget(c4)
+
         # --- премия ---
         c5 = Card("Премия")
         self.f_bonus = field("Разовая сумма за день, ₽", "0", True, self.recalc)
@@ -442,7 +466,8 @@ class DayScreen(Screen):
         self.r_xpay = Row("Доп. работы", "0 ₽")
         self.r_bonus = Row("Премия", "0 ₽")
         self.r_penalty = Row("Штраф", "0 ₽")
-        for r in (self.r_hours, self.r_xhours, self.r_pay, self.r_xpay, self.r_bonus, self.r_penalty):
+        for r in (self.r_hours, self.r_xhours, self.r_pay, self.r_xpay,
+                  self.r_bonus, self.r_penalty):
             c2.add_widget(r)
         self.r_total = Row("ИТОГО ЗА ДЕНЬ", "0 ₽", bold=True, size=19, color=C["ok"])
         self.r_total.height = dp(34)
@@ -519,6 +544,7 @@ class DayScreen(Screen):
         title = ("Описание произведённых работ" if target == "works"
                  else "Описание дополнительных работ")
 
+        # Release any Kivy text field focus before opening the Android window.
         for widget in self.walk():
             if isinstance(widget, TextInput):
                 widget.focus = False
@@ -556,6 +582,8 @@ class DayScreen(Screen):
 
             def completed(status, value):
                 self._editor_busy = False
+                # Чиним софт-клавиатуру сразу после закрытия нативного редактора.
+                Clock.schedule_once(lambda *_: _restart_soft_keyboard(), 0.2)
                 if status == "ok":
                     self._accept_works_text(value, target)
                 elif status == "error":
@@ -703,8 +731,10 @@ class DayScreen(Screen):
         self.btn_works.disabled = locked
         self.lbl_xworks.disabled = locked
         self.btn_xworks.disabled = locked
-        for w in controls: w.disabled = locked
-        for w in (self.t_lunch, self.t_extra, self.t_xfixed, self.t_penalty): w.disabled = locked
+        for w in controls:
+            w.disabled = locked
+        for w in (self.t_lunch, self.t_extra, self.t_xfixed, self.t_penalty):
+            w.disabled = locked
         if hasattr(self, "penalty_box"):
             self.penalty_box.disabled = locked or not self.t_penalty.get()
 
@@ -1048,26 +1078,22 @@ class SettingsScreen(Screen):
         self.f_emp_id = field("employee_id (заполнится автоматически)", "")
         self.f_emp_id.input.disabled = True
         c_sync.add_widget(self.f_emp_id)
-
         self.f_restore_name = field("ФИО (для восстановления аккаунта)", "")
         self.f_restore_birth = field("Дата рождения (ДД.ММ.ГГГГ)", "")
         c_sync.add_widget(self.f_restore_name)
         c_sync.add_widget(self.f_restore_birth)
-
         self.lbl_sync = TLabel("", size=12, color=C["text_muted"])
         c_sync.add_widget(self.lbl_sync)
-
         sync_btns = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
         self.btn_bind = FlatButton("ПРИВЯЗАТЬ", bg=C["accent_light"],
-                                    fg=C["accent_dark"], height=50, size=13,
-                                    on_release=lambda _b: self.bind_device())
+                                   fg=C["accent_dark"], height=50, size=13,
+                                   on_release=lambda _b: self.bind_device())
         self.btn_restore = FlatButton("ВОССТАНОВИТЬ АККАУНТ", bg=C["warn"],
-                                       height=50, size=13,
-                                       on_release=lambda _b: self.restore_account())
+                                      height=50, size=13,
+                                      on_release=lambda _b: self.restore_account())
         sync_btns.add_widget(self.btn_bind)
         sync_btns.add_widget(self.btn_restore)
         c_sync.add_widget(sync_btns)
-
         body.add_widget(c_sync)
 
         body.add_widget(FlatButton("СОХРАНИТЬ НАСТРОЙКИ", height=54,
@@ -1079,8 +1105,8 @@ class SettingsScreen(Screen):
                                  fg=C["text"], font=FONT, height=46,
                                  on_release=lambda *_: self.backup()))
         self.btn_restore_backup = FlatButton("Восстановить из резервной копии", bg=C["surface_alt"],
-                                     fg=C["text"], font=FONT, height=52, size=13,
-                                     on_release=lambda *_: self.app.restore_controller.open())
+                                             fg=C["text"], font=FONT, height=52, size=13,
+                                             on_release=lambda *_: self.app.restore_controller.open())
         c4.add_widget(self.btn_restore_backup)
         body.add_widget(c4)
         body.add_widget(TLabel("Табель 2.0  •  учёт рабочего времени и выплат\nверсия 2.0.0",
@@ -1104,7 +1130,7 @@ class SettingsScreen(Screen):
         if SYNC_AVAILABLE and self.app.sync_client:
             status = "привязано" if emp_id else "не привязано"
             self.lbl_sync.text = ("ID устройства: %s…\nСтатус: %s"
-                                   % (self.app.sync_client.device_id[:8], status))
+                                  % (self.app.sync_client.device_id[:8], status))
         else:
             self.lbl_sync.text = "Синхронизация недоступна в этой сборке"
 
@@ -1145,6 +1171,8 @@ class SettingsScreen(Screen):
                     self.app.db.set("employee_token", emp_token)
                     self.app.db.set("secret_key", emp_token)
                     self.app.sync_client.set_credentials(emp_id, emp_token)
+                    # Сразу спрашиваем сервер об ожидающих командах.
+                    Clock.schedule_once(lambda *_: self.app._poll_sync(0), 1.5)
                     self.load()
                     toast("✓ Устройство привязано", "ok")
                 else:
@@ -1196,6 +1224,8 @@ class SettingsScreen(Screen):
         self.app.db.set("employee_token", emp_token)
         self.app.db.set("secret_key", emp_token)
         self.app.sync_client.set_credentials(emp_id, emp_token)
+        # Сразу спрашиваем сервер об ожидающих командах (одобрения и т.п.).
+        Clock.schedule_once(lambda *_: self.app._poll_sync(0), 1.5)
 
         days_imported = 0
         for item in result.get("timesheet_state", []):
@@ -1245,7 +1275,7 @@ class SettingsScreen(Screen):
         except Exception:
             pass
         self.lbl_sync.text = ("Импортировано: %d дней, %d закрытых недель"
-                               % (days_imported, weeks_imported))
+                              % (days_imported, weeks_imported))
         toast("Аккаунт восстановлен: %d дней" % days_imported, "ok")
 
     def backup(self):
@@ -1288,21 +1318,17 @@ class TabelApp(App):
         # === ИНИЦИАЛИЗАЦИЯ СИНХРОНИЗАЦИИ ===
         self.sync_client = None
         self.sync_event = None
-
         if SYNC_AVAILABLE:
             device_id_file = os.path.join(self.data_dir, "device_id.txt")
             self.sync_client = SyncClient(SYNC_API_URL, SYNC_API_TOKEN, device_id_file)
-
             emp_id = self.db.get("employee_id", "")
             emp_token = self.db.get("employee_token", "") or self.db.get("secret_key", "")
             if emp_id and emp_token:
                 self.sync_client.set_credentials(emp_id, emp_token)
-
             self.sync_event = Clock.schedule_interval(self._poll_sync, 30)
             Clock.schedule_once(lambda *_: self._poll_sync(0), 3)
 
         Window.clearcolor = C["bg"]
-
         root = BoxLayout(orientation="vertical")
 
         # шапка
@@ -1390,6 +1416,10 @@ class TabelApp(App):
             self.s_week.refresh()
         elif cur == "hist":
             self.s_hist.refresh()
+
+    def on_resume(self):
+        # Возврат в приложение после внешних окон: чиним софт-клавиатуру заранее.
+        Clock.schedule_once(lambda *_: _restart_soft_keyboard(), 0.3)
 
     def go(self, key):
         if key == "week":
@@ -1502,6 +1532,7 @@ class TabelApp(App):
             self._backup_done(cancelled=True)
             return
         import threading
+
         def copy_file():
             try:
                 from jnius import autoclass
@@ -1554,7 +1585,6 @@ class TabelApp(App):
     def on_stop(self):
         if self.sync_event:
             self.sync_event.cancel()
-
         self._stopping = True
         self.on_pause()
         try:

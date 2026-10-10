@@ -903,6 +903,8 @@ class WeekScreen(Screen):
         self.payment_box.add_widget(self.received_toggle)
         complete = self.app.db.week_complete(d)
         closed = self.app.db.week_received(d)
+        if closed:
+            self._resend_received(d)
         self.payment_status.text = ("✓ Неделя закрыта окончательно" if closed else
                                     "Все заполненные дни одобрены" if complete else
                                     "Дата станет доступна после одобрения всех заполненных дней")
@@ -913,6 +915,28 @@ class WeekScreen(Screen):
         self.received_toggle.set(closed)
         self.body.add_widget(self.payment_box)
         self.body.add_widget(TLabel("", height=dp(8)))
+
+    def _resend_received(self, d):
+        """Неделя закрыта локально, но сервер мог не узнать (старая сборка)."""
+        if not (SYNC_AVAILABLE and self.app.sync_client):
+            return
+        monday = week_start(d).isoformat()
+        sent = getattr(self, "_sent_received_weeks", None)
+        if sent is None:
+            sent = set()
+            self._sent_received_weeks = sent
+        if monday in sent:
+            return
+        emp_id = self.app.db.get("employee_id", "")
+        emp_token = (self.app.db.get("employee_token", "")
+                     or self.app.db.get("secret_key", ""))
+        if not (emp_id and emp_token):
+            return
+        sent.add(monday)
+        version = self.app.db.get_week_version(d)
+        pay_date = self.app.db.received_on(d) or dt.date.today().isoformat()
+        self.app.sync_client.send_async(
+            "payment_received", emp_id, emp_token, monday, pay_date, version)
 
     def _received_date_changed(self):
         if hasattr(self, "received_toggle"):
@@ -943,8 +967,7 @@ class WeekScreen(Screen):
                 monday = week_start(self.app.current).isoformat()
                 self.app.sync_client.send_async(
                     "payment_received", emp_id, emp_token, monday,
-                    {"week_id": monday, "payment_date": got.isoformat(),
-                     "payment_confirmed": True}, version)
+                    got.isoformat(), version)
 
 
 # --------------------------------------------------------------- экран ИСТОРИЯ

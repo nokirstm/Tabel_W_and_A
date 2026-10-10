@@ -1394,18 +1394,35 @@ class TabelApp(App):
             return
 
         def process(result):
+            # ВАЖНО: эта функция работает в фоновом потоке. Трогать базу
+            # и виджеты отсюда нельзя — переносим применение в главный поток.
             if not result.get("ok"):
                 return
-            for item in result.get("items", []):
-                if item.get("command") != "day_approved":
-                    continue
-                payload = item.get("payload", {}) or {}
-                date = payload.get("date", "")
-                if date and not self.db.is_approved(date):
-                    self.db.mark_approved(date)
-                    Clock.schedule_once(lambda *_: self._refresh_ui(), 0)
+            items = [it for it in result.get("items", [])
+                     if it.get("command") == "day_approved"]
+            if not items:
+                return
+            Clock.schedule_once(lambda _dt2: self._apply_approved(items), 0)
 
         self.sync_client.send_async("poll_commands", callback=process)
+
+    def _apply_approved(self, items):
+        """Применяет одобрения ТОЛЬКО в главном потоке: здесь доступен SQLite."""
+        changed = False
+        for item in items:
+            payload = item.get("payload", {}) or {}
+            date = payload.get("date", "")
+            if not date:
+                continue
+            try:
+                if not self.db.is_approved(date):
+                    self.db.mark_approved(date)
+                    changed = True
+            except Exception as ex:
+                from kivy.logger import Logger
+                Logger.exception("apply approved failed: %s" % date)
+        if changed:
+            self._refresh_ui()
 
     def _refresh_ui(self):
         """Обновляет UI после получения команды синхронизации."""

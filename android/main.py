@@ -1250,6 +1250,9 @@ class SettingsScreen(Screen):
                 entry_data.setdefault("penalty_on", False)
                 e = DayEntry(**entry_data)
                 self.app.db.save_day(e)
+                approved_at = payload.get("approved_at", "")
+                if approved_at:
+                    self.app.db.mark_approved(date, approved_at)
                 days_imported += 1
             except Exception:
                 continue

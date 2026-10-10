@@ -5,7 +5,7 @@ Android-версия (Kivy). Собирается в .apk через buildozer.
 Использует то же ядро расчётов, что и Windows-версия: core/timecard_core.py
 
 ВЕРСИЯ 2.0.0 - синхронизация с сервером, защиты экрана дня, всеядный ввод,
-самовосстановление софт-клавиатуры
+безопасная починка софт-клавиатуры
 """
 import os
 import sys
@@ -169,10 +169,11 @@ class TInput(TextInput):
         self._l.rounded_rectangle = (self.x, self.y, self.width, self.height, dp(8))
 
     def _focus(self, _w, val):
+        # ВАЖНО: здесь нельзя трогать InputMethodManager: перезапуск соединения
+        # при смене фокуса выбрасывает недописанный текст соседнего поля и может
+        # убить доставку символов. Починка клавиатуры живёт только в on_resume
+        # приложения и после закрытия нативного редактора.
         self._c.rgba = C["accent"] if val else C["border"]
-        if val:
-            # Самовосстановление софт-клавиатуры при каждом фокусе поля.
-            Clock.schedule_once(lambda *_: _restart_soft_keyboard(), 0.1)
 
 
 class FlatButton(Button):
@@ -295,8 +296,8 @@ def toast(text, kind="ok"):
 
 def _restart_soft_keyboard():
     """Пересоздаёт связь софт-клавиатуры с окном.
-    После нативных диалогов Android и системных пикеров поля Kivy могут
-    перестать принимать ввод с клавиатуры; этот вызов чинит соединение."""
+    Вызывать ТОЛЬКО когда ни одно поле Kivy не держит фокус: после возврата
+    из внешних окон и после закрытия нативного редактора."""
     if not os.environ.get("ANDROID_ARGUMENT"):
         return
     try:
@@ -582,7 +583,8 @@ class DayScreen(Screen):
 
             def completed(status, value):
                 self._editor_busy = False
-                # Чиним софт-клавиатуру сразу после закрытия нативного редактора.
+                # Клавиатура чинится после нативного редактора: в этот момент
+                # ни одно поле Kivy не держит фокус, выбрасывать текст некуда.
                 Clock.schedule_once(lambda *_: _restart_soft_keyboard(), 0.2)
                 if status == "ok":
                     self._accept_works_text(value, target)
@@ -1435,8 +1437,21 @@ class TabelApp(App):
             self.s_hist.refresh()
 
     def on_resume(self):
-        # Возврат в приложение после внешних окон: чиним софт-клавиатуру заранее.
-        Clock.schedule_once(lambda *_: _restart_soft_keyboard(), 0.3)
+        # Возврат из внешних окон (выбор файла, системные диалоги): чиним
+        # софт-клавиатуру. Сначала снимаем фокус со всех полей, чтобы системе
+        # некуда было выбрасывать недописанный текст.
+        def _heal(_dt):
+            root = getattr(self, "root", None)
+            if root is None:
+                return
+            try:
+                for w in root.walk():
+                    if isinstance(w, TextInput):
+                        w.focus = False
+            except Exception:
+                pass
+            _restart_soft_keyboard()
+        Clock.schedule_once(_heal, 0.3)
 
     def go(self, key):
         if key == "week":

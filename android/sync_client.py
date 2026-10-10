@@ -114,10 +114,11 @@ class SyncClient:
         }
         return self._make_request('payment_date_entered', payload, employee_id, employee_token)
     
-    def payment_received(self, employee_id, employee_token, week_id, version):
+    def payment_received(self, employee_id, employee_token, week_id, payment_date, version):
         """Подтверждение получения выплаты."""
         payload = {
             'week_id': week_id,
+            'payment_date': payment_date,
             'payment_confirmed': True,
             'version': version
         }

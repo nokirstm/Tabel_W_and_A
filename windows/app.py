@@ -475,7 +475,7 @@ class App(tk.Tk):
         data["sync_status"] = "synced"
         for k in ("lunch_on", "extra_on", "extra_use_fixed", "penalty_on"):
             data.setdefault(k, False)
-        data.setdefault("approved_at", local.approved_at or "")
+        data["approved_at"] = ""
         data.setdefault("rate", self.db.get_float("rate", 250))
         data.setdefault("extra_rate", self.db.get_float("extra_rate", 250))
         e = DayEntry(**data)
@@ -619,8 +619,9 @@ class App(tk.Tk):
             ui.toast(self, "Одобрение доставлено на телефон")
         elif result.get("ok") and result.get("status") == "conflict":
             self._log_sync("day_approved", "conflict: версия записи изменилась")
-            ui.toast(self, "Сервер отклонил одобрение: запись изменилась на "
-                           "телефоне (version не совпадает)", "warn")
+            ui.toast(self, "Сервер отклонил одобрение: на телефоне запись новее. "
+                           "После применения обновления с телефона нажмите "
+                           "«ОДОБРИТЬ ДЕНЬ» ещё раз", "warn")
         else:
             err = str(result.get("error", "неизвестная ошибка"))
             self._sync_last_error = err

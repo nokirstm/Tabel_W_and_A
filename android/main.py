@@ -1410,7 +1410,7 @@ class TabelApp(App):
 
     def _apply_approved(self, items):
         """Применяет одобрения ТОЛЬКО в главном потоке: здесь доступен SQLite."""
-        changed = False
+        changed = []
         for item in items:
             payload = item.get("payload", {}) or {}
             date = payload.get("date", "")
@@ -1419,11 +1419,14 @@ class TabelApp(App):
             try:
                 if not self.db.is_approved(date):
                     self.db.mark_approved(date)
-                    changed = True
+                    changed.append(date)
             except Exception as ex:
                 from kivy.logger import Logger
                 Logger.exception("apply approved failed: %s" % date)
         if changed:
+            changed.sort()
+            toast("Начальник одобрил: " +
+                  ", ".join(d[8:10] + "." + d[5:7] for d in changed), "ok")
             self._refresh_ui()
 
     def _refresh_ui(self):

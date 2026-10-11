@@ -58,43 +58,53 @@ public class FieldEditor {
                         edit.addTextChangedListener(new TextWatcher() {
                             private boolean updating = false;
 
-                            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
-                            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
+                            @Override
+                            public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+
+                            @Override
+                            public void onTextChanged(CharSequence s, int a, int b, int c) {}
 
                             @Override
                             public void afterTextChanged(Editable s) {
                                 if (updating) return;
                                 updating = true;
                                 try {
-                                    // только цифры, максимум 8
+                                    String raw = s.toString();
+
+                                    // Собираем только цифры, максимум 8
                                     StringBuilder digits = new StringBuilder();
-                                    for (int i = 0; i < s.length(); i++) {
-                                        char ch = s.charAt(i);
+                                    for (int i = 0; i < raw.length() && digits.length() < 8; i++) {
+                                        char ch = raw.charAt(i);
                                         if (ch >= '0' && ch <= '9') {
                                             digits.append(ch);
-                                            if (digits.length() == 8) break;
                                         }
                                     }
-                                    // расставляем точки: дд.мм.гггг
+
+                                    // Расставляем точки: дд.мм.гггг
                                     StringBuilder fmt = new StringBuilder();
                                     for (int i = 0; i < digits.length(); i++) {
                                         if (i == 2 || i == 4) fmt.append('.');
                                         fmt.append(digits.charAt(i));
                                     }
+
                                     String out = fmt.toString();
-                                    if (!out.equals(s.toString())) {
+                                    if (!out.equals(raw)) {
+                                        // replace() сам ставит курсор в конец.
+                                        // НЕ вызывать edit.setSelection() здесь —
+                                        // буфер ещё не обновлён, будет краш.
                                         s.replace(0, s.length(), out);
                                     }
-                                    edit.setSelection(out.length());
-                                } finally {
-                                    updating = false;
+                                } catch (Throwable t) {
+                                    // Маска не должна ронять приложение.
+                                    // Если что-то пошло не так — оставляем как есть.
                                 }
+                                updating = false;
                             }
                         });
                     }
 
-                    // Устанавливаем ТЕКУЩЕЕ значение ПОСЛЕ подключения TextWatcher,
-                    // чтобы маска сразу сработала (если пришли точки или лишние символы).
+                    // Текущее значение ПОСЛЕ подключения TextWatcher,
+                    // чтобы маска сразу нормализовала строку.
                     edit.setText(current != null ? current : "");
                     edit.setSelection(edit.getText().length());
 

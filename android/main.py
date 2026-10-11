@@ -3,7 +3,6 @@
 Табель 2.0 — учёт рабочего времени и выплат.
 Android-версия (Kivy). Собирается в .apk через buildozer.
 Использует то же ядро расчётов, что и Windows-версия: core/timecard_core.py
-
 ВЕРСИЯ 2.0.0 - синхронизация с сервером, защиты экрана дня, всеядный ввод,
 безопасная починка софт-клавиатуры
 """
@@ -40,9 +39,9 @@ from kivy.clock import Clock
 from kivy.utils import get_color_from_hex as hexc
 
 from timecard_core import (THEME as T, DayEntry, Storage, Totals, WEEKDAYS_RU,
-                           WEEKDAYS_RU_SHORT, MONTHS_RU, parse_time, parse_duration,
-                           fmt_time, fmt_hm, fmt_hm_short, fmt_money,
-                           week_range, week_start, week_title, month_title, month_range)
+    WEEKDAYS_RU_SHORT, MONTHS_RU, parse_time, parse_duration,
+    fmt_time, fmt_hm, fmt_hm_short, fmt_money,
+    week_range, week_start, week_title, month_title, month_range)
 import reports
 
 # Android system document picker for backups. No FileProvider is needed.
@@ -59,12 +58,13 @@ except ImportError:
     SYNC_AVAILABLE = False
 
 SYNC_API_URL = ("https://script.google.com/macros/s/"
-                "AKfycbwDWAS8t__5y3WdFudGQa8OMyWxxBYl56tiJY5RHjR1EmBPiyTrlXUpa2CcmI-q3sQBdQ/exec")
+    "AKfycbwDWAS8t__5y3WdFudGQa8OMyWxxBYl56tiJY5RHjR1EmBPiyTrlXUpa2CcmI-q3sQBdQ/exec")
 SYNC_API_TOKEN = "28096b2395454f05a7ce7a2b0fcfe3b2e58fd9bed8d5465db4560056a662659c"
 
 # Клавиатура уменьшает окно вместо перекрытия поля. Выставляется ОДИН раз здесь:
 # переприсваивание режима на каждом фокусе перезапускает соединение IME.
 Window.softinput_mode = "resize"
+
 C = {k: hexc(v) for k, v in T.items()}
 
 # --- шрифты с кириллицей ---
@@ -77,7 +77,8 @@ for name, fn in (("Regular", "DejaVuSans.ttf"), ("Bold", "DejaVuSans-Bold.ttf"))
             break
     else:
         LabelBase.register(name=name, fn_regular=LabelBase.default_font_paths[0]
-                           if hasattr(LabelBase, "default_font_paths") else "Roboto")
+            if hasattr(LabelBase, "default_font_paths") else "Roboto")
+
 FONT = "Regular"
 FONTB = "Bold"
 
@@ -98,7 +99,7 @@ class Card(BoxLayout):
         self.bind(pos=self._sync, size=self._sync)
         if title:
             self.add_widget(TLabel(title, font=FONTB, size=17, color=C["accent_dark"],
-                                   height=dp(26)))
+                height=dp(26)))
         self._auto_h = self.setter("height")
         self.bind(minimum_height=self._auto_h)
 
@@ -140,10 +141,10 @@ class TLabel(Label):
     def __init__(self, text="", size=15, color=None, font=FONT, halign="left",
                  height=None, bold=False, **kw):
         super().__init__(text=text, font_size=sp(size), font_name=font,
-                         color=color or C["text"], halign=halign, valign="middle",
-                         size_hint_y=None, **kw)
+            color=color or C["text"], halign=halign, valign="middle",
+            size_hint_y=None, **kw)
         self._fixed = height
-        self.bind(width=lambda *_: setattr(self, "text_size", (self.width, None)))
+        self.bind(width=lambda *a: setattr(self, "text_size", (self.width, None)))
         self.bind(texture_size=self._resize)
         if height:
             self.height = height
@@ -170,8 +171,6 @@ class TInput(TextInput):
             self._l = Line(width=1.2)
         self.bind(pos=self._sync, size=self._sync, focus=self._focus)
         if date_mask:
-            # Во время ввода поле содержит ровно то, что видит IME: только цифры,
-            # без переписываний. Точки появляются один раз при потере фокуса.
             self.input_filter = self._date_filter
             self.bind(focus=self._date_focus)
 
@@ -179,10 +178,6 @@ class TInput(TextInput):
         self._l.rounded_rectangle = (self.x, self.y, self.width, self.height, dp(8))
 
     def _focus(self, _w, val):
-        # ВАЖНО: здесь и после касания нельзя трогать InputMethodManager:
-        # перезапуск при поле с фокусом убивает доставку клавиш, включая
-        # backspace в соседних полях. Починка живёт только в on_resume
-        # приложения и после закрытия нативного редактора.
         self._c.rgba = C["accent"] if val else C["border"]
         if val:
             self._scroll_into_view()
@@ -197,8 +192,6 @@ class TInput(TextInput):
         Clock.schedule_once(lambda *_a: sv.scroll_to(self, padding=dp(12)), 0.3)
 
     def on_touch_down(self, touch):
-        # Перед взятием фокуса снимаем фокус с соседей, чтобы IME не выбрасывал
-        # composing-текст в новое поле. Перезапуска соединения здесь НЕТ.
         if self.disabled or not self.collide_point(*touch.pos):
             return super().on_touch_down(touch)
         if not self.focus:
@@ -235,9 +228,9 @@ class FlatButton(Button):
     def __init__(self, text, bg=None, fg=None, height=50, size=16, font=FONTB,
                  radius=10, **kw):
         super().__init__(text=text, background_normal="", background_down="",
-                         background_color=(0, 0, 0, 0), color=fg or C["white"],
-                         font_name=font, font_size=sp(size),
-                         size_hint_y=None, height=dp(height), **kw)
+            background_color=(0, 0, 0, 0), color=fg or C["white"],
+            font_name=font, font_size=sp(size),
+            size_hint_y=None, height=dp(height), **kw)
         self._bg = bg or C["accent"]
         with self.canvas.before:
             self._c = Color(*self._bg)
@@ -255,7 +248,6 @@ class FlatButton(Button):
 
 class Toggle(BoxLayout):
     """Галочка: квадрат + подпись, вся строка кликабельна."""
-
     def __init__(self, text, on_toggle=None, bg=None, **kw):
         super().__init__(orientation="horizontal", size_hint_y=None,
                          height=dp(46), spacing=dp(10), **kw)
@@ -308,11 +300,11 @@ class Toggle(BoxLayout):
 class Row(BoxLayout):
     def __init__(self, left, right, bold=False, color=None, size=15, **kw):
         super().__init__(orientation="horizontal", size_hint_y=None,
-                         height=dp(26), **kw)
+            height=dp(26), **kw)
         a = TLabel(left, size=size, font=FONTB if bold else FONT,
-                   color=color or C["text"], height=dp(26))
+            color=color or C["text"], height=dp(26))
         b = TLabel(right, size=size, font=FONTB, halign="right",
-                   color=color or C["text"], height=dp(26))
+            color=color or C["text"], height=dp(26))
         self.add_widget(a)
         self.add_widget(b)
         self.value = b
@@ -321,7 +313,7 @@ class Row(BoxLayout):
 def field(label, hint="", numeric=False, on_text=None, height=48, date_mask=False):
     """Подпись + поле ввода в вертикальной коробке."""
     box = BoxLayout(orientation="vertical", size_hint_y=None,
-                    height=dp(height + 20), spacing=dp(2))
+        height=dp(height + 20), spacing=dp(2))
     box.add_widget(TLabel(label, size=12, color=C["text_muted"], height=dp(18)))
     inp = TInput(hint=hint, numeric=numeric, height=height, date_mask=date_mask)
     if on_text:
@@ -335,14 +327,14 @@ def toast(text, kind="ok"):
     from kivy.animation import Animation
     col = {"ok": C["ok"], "warn": C["warn"], "err": C["danger"]}.get(kind, C["ok"])
     lbl = Label(text=text, font_name=FONTB, font_size=sp(14), color=C["white"],
-                size_hint=(None, None), padding=(dp(18), dp(12)))
+        size_hint=(None, None), padding=(dp(18), dp(12)))
     lbl.texture_update()
     lbl.size = (lbl.texture_size[0] + dp(36), lbl.texture_size[1] + dp(24))
     with lbl.canvas.before:
         Color(*col)
         r = RoundedRectangle(radius=[dp(10)])
     lbl.bind(pos=lambda *a: setattr(r, "pos", lbl.pos),
-             size=lambda *a: setattr(r, "size", lbl.size))
+        size=lambda *a: setattr(r, "size", lbl.size))
     lbl.pos = (Window.width / 2 - lbl.width / 2, dp(90))
     Window.add_widget(lbl)
     Animation(opacity=0, duration=0.6, t="in_quad").start(lbl)
@@ -368,6 +360,16 @@ def _restart_soft_keyboard():
         pass
 
 
+def _format_date_digits(digits):
+    """Форматирует строку цифр в дд.мм.гггг (без валидации)."""
+    digits = "".join(ch for ch in digits if ch.isdigit())[:8]
+    if len(digits) > 4:
+        return digits[:2] + "." + digits[2:4] + "." + digits[4:]
+    elif len(digits) > 2:
+        return digits[:2] + "." + digits[2:]
+    return digits
+
+
 # ------------------------------------------------------------------ экран ДЕНЬ
 class DayScreen(Screen):
     def __init__(self, app, **kw):
@@ -380,6 +382,7 @@ class DayScreen(Screen):
         self._editor_target = "works"
         self._editor_date = None
         self._native_editor = None
+
         root = BoxLayout(orientation="vertical")
         self.add_widget(root)
 
@@ -425,7 +428,6 @@ class DayScreen(Screen):
         gr.add_widget(self.f_start)
         gr.add_widget(self.f_end)
         c1.add_widget(gr)
-
         self.t_lunch = Toggle("Был обед (вычесть из времени)", self._lunch)
         c1.add_widget(self.t_lunch)
         self.lunch_box = Card(bg=C["surface_alt"], radius=10, padding=[dp(10)] * 4)
@@ -480,7 +482,6 @@ class DayScreen(Screen):
         self.extra_box.add_widget(self.t_xfixed)
         self.f_xfixed = field("Сумма за доп. работы, ₽", "0", True, self.recalc)
         self.extra_box.add_widget(self.f_xfixed)
-
         self.lbl_xworks = FlatButton("описание доп. работ…", height=100,
                                      bg=C["white"], fg=C["text_muted"], size=15,
                                      font=FONT, halign="left", valign="top",
@@ -592,14 +593,12 @@ class DayScreen(Screen):
         except Exception as ex:
             self._editor_failed(str(ex))
             return
-
         self._editor_target = target
         self._editor_date = self.app.current
         current = (self._works_text if target == "works"
                    else self._extra_works_text) or ""
         title = ("Описание произведённых работ" if target == "works"
                  else "Описание дополнительных работ")
-
         # Release any Kivy text field focus before opening the Android window.
         for widget in self.walk():
             if isinstance(widget, TextInput):
@@ -617,11 +616,9 @@ class DayScreen(Screen):
             popup = Popup(title=title, content=content, size_hint=(.95, None),
                           height=dp(340))
             row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
-
             def save(*_):
                 self._accept_works_text(inp.text, target)
                 popup.dismiss()
-
             row.add_widget(FlatButton("Сохранить", height=44, on_release=save))
             row.add_widget(FlatButton("Отмена", bg=C["surface_alt"],
                                       fg=C["text"], height=44,
@@ -638,8 +635,6 @@ class DayScreen(Screen):
 
             def completed(status, value):
                 self._editor_busy = False
-                # Клавиатура чинится после нативного редактора: в этот момент
-                # ни одно поле Kivy не держит фокус, выбрасывать текст некуда.
                 Clock.schedule_once(lambda *_: _restart_soft_keyboard(), 0.2)
                 if status == "ok":
                     self._accept_works_text(value, target)
@@ -853,6 +848,10 @@ class WeekScreen(Screen):
     def __init__(self, app, **kw):
         super().__init__(name="week", **kw)
         self.app = app
+        self._field_editor = None
+        # Состояние даты получения (вместо TextInput)
+        self._received_date_text = ""
+
         root = BoxLayout(orientation="vertical")
         self.add_widget(root)
 
@@ -948,14 +947,22 @@ class WeekScreen(Screen):
         self.body.add_widget(tot)
         self.body.add_widget(FlatButton("Поделиться отчётом за неделю",
                                         on_release=lambda *_: self.app.share_week()))
+
+        # === Блок «Сумма получена» — нативный ввод даты ===
         self.payment_box = Card("Сумма получена", bg=C["surface_alt"], radius=10)
         self.payment_status = TLabel("", size=13, color=C["text_muted"])
         self.payment_box.add_widget(self.payment_status)
-        self.f_received = field("Дата получения", "дд.мм.гггг", date_mask=True)
-        self.f_received.input.bind(text=lambda *_: self._received_date_changed())
-        self.payment_box.add_widget(self.f_received)
+
+        # Превью + кнопка вместо TextInput
+        self.lbl_received = FlatButton("дд.мм.гггг", height=48,
+                                       bg=C["white"], fg=C["text_muted"], size=16,
+                                       font=FONT, halign="center",
+                                       on_release=lambda *_: self._open_received_editor())
+        self.payment_box.add_widget(self.lbl_received)
+
         self.received_toggle = Toggle("Получил", self._received_toggle)
         self.payment_box.add_widget(self.received_toggle)
+
         complete = self.app.db.week_complete(d)
         closed = self.app.db.week_received(d)
         if closed:
@@ -963,16 +970,85 @@ class WeekScreen(Screen):
         self.payment_status.text = ("✓ Неделя закрыта окончательно" if closed else
                                     "Все заполненные дни одобрены" if complete else
                                     "Дата станет доступна после одобрения всех заполненных дней")
+
         received_on = self.app.db.received_on(d) if complete else ""
         if len(received_on) == 10 and received_on[4] == "-" and received_on[7] == "-":
             received_on = received_on[8:10] + "." + received_on[5:7] + "." + received_on[0:4]
-        self.f_received.input.text = received_on
-        # Блокировать сам TextInput, а не контейнер BoxLayout — иначе поле выглядит активным, но ввод не работает
-        self.f_received.input.disabled = not complete or closed
-        self.received_toggle.disabled = not complete or closed or not received_on.strip()
+        self._received_date_text = received_on
+        self._update_received_label()
+
+        locked = not complete or closed
+        self.lbl_received.disabled = locked
+        self.received_toggle.disabled = locked or not received_on.strip()
         self.received_toggle.set(closed)
+
         self.body.add_widget(self.payment_box)
         self.body.add_widget(TLabel("", height=dp(8)))
+
+    def _update_received_label(self):
+        """Обновляет превью даты получения."""
+        if self._received_date_text.strip():
+            self.lbl_received.text = self._received_date_text
+            self.lbl_received.color = C["text"]
+        else:
+            self.lbl_received.text = "дд.мм.гггг"
+            self.lbl_received.color = C["text_muted"]
+
+    def _open_received_editor(self, *_):
+        """Открывает нативный редактор для даты получения."""
+        if self.lbl_received.disabled:
+            return
+        # Снимаем фокус со всех Kivy TextInput перед открытием
+        root = getattr(self.app, "root", None)
+        if root:
+            for w in root.walk():
+                if isinstance(w, TextInput) and w.focus:
+                    w.focus = False
+
+        title = "Дата получения"
+        current = self._received_date_text.replace(".", "")  # показываем цифры
+
+        if not os.environ.get("ANDROID_ARGUMENT"):
+            # Десктоп: простой Popup
+            content = BoxLayout(orientation="vertical", spacing=dp(8), padding=[dp(10)] * 2)
+            inp = TextInput(text=current, hint_text="ддммгггг", multiline=False,
+                            size_hint_y=None, height=dp(56), input_filter="int",
+                            background_normal="", background_active="",
+                            background_color=C["white"], foreground_color=C["text"],
+                            font_name=FONT, font_size=sp(17), padding=[dp(10), dp(12)])
+            content.add_widget(inp)
+            row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
+            popup = Popup(title=title, content=content, size_hint=(.9, None), height=dp(200))
+            def save(*_):
+                self._accept_received_date(inp.text)
+                popup.dismiss()
+            row.add_widget(FlatButton("Сохранить", height=44, on_release=save))
+            row.add_widget(FlatButton("Отмена", bg=C["surface_alt"], fg=C["text"],
+                                      height=44, on_release=lambda *_: popup.dismiss()))
+            content.add_widget(row)
+            popup.open()
+            return
+
+        try:
+            from field_editor import FieldEditor
+            if self._field_editor is None:
+                self._field_editor = FieldEditor()
+
+            def completed(status, value):
+                Clock.schedule_once(lambda *_: _restart_soft_keyboard(), 0.2)
+                if status == "ok":
+                    self._accept_received_date(value)
+
+            self._field_editor.open(title, current, "number", completed)
+        except Exception as ex:
+            toast("Не удалось открыть редактор: %s" % ex, "warn")
+
+    def _accept_received_date(self, raw):
+        """Принимает цифры или форматированную дату, сохраняет в состояние."""
+        digits = "".join(ch for ch in raw if ch.isdigit())[:8]
+        self._received_date_text = _format_date_digits(digits)
+        self._update_received_label()
+        self._received_date_changed()
 
     def _resend_received(self, d):
         """Неделя закрыта локально, но сервер мог не узнать (старая сборка)."""
@@ -1000,7 +1076,7 @@ class WeekScreen(Screen):
         if hasattr(self, "received_toggle"):
             closed = self.app.db.week_received(self.app.current)
             self.received_toggle.disabled = (not self.app.db.week_complete(self.app.current)
-                                             or closed or not self.f_received.input.text.strip())
+                                             or closed or not self._received_date_text.strip())
 
     def _received_toggle(self, active):
         if not active:
@@ -1009,7 +1085,7 @@ class WeekScreen(Screen):
             self.received_toggle.set(False)
             toast("Сначала начальник должен одобрить все заполненные дни", "warn")
             return
-        got = _parse_date_ru(self.f_received.input.text)
+        got = _parse_date_ru(self._received_date_text)
         if got is None:
             self.received_toggle.set(False)
             toast("Введите дату в формате ДД.ММ.ГГГГ", "warn")
@@ -1126,10 +1202,15 @@ class SettingsScreen(Screen):
     def __init__(self, app, **kw):
         super().__init__(name="set", **kw)
         self.app = app
+        self._field_editor = None
+        # Состояния полей, которые теперь вводятся через нативный диалог
+        self._restore_name_text = ""
+        self._restore_birth_text = ""
+
         sc = ScrollView(do_scroll_x=False)
         self.add_widget(sc)
         body = BoxLayout(orientation="vertical", size_hint_y=None,
-                         padding=[dp(10), dp(12)], spacing=dp(10))
+            padding=[dp(10), dp(12)], spacing=dp(10))
         body.bind(minimum_height=body.setter("height"))
         sc.add_widget(body)
 
@@ -1161,10 +1242,26 @@ class SettingsScreen(Screen):
         self.f_emp_id = field("employee_id (заполнится автоматически)", "")
         self.f_emp_id.input.disabled = True
         c_sync.add_widget(self.f_emp_id)
-        self.f_restore_name = field("ФИО (для восстановления аккаунта)", "")
-        self.f_restore_birth = field("Дата рождения (ДД.ММ.ГГГГ)", "", date_mask=True)
-        c_sync.add_widget(self.f_restore_name)
-        c_sync.add_widget(self.f_restore_birth)
+
+        # === ФИО и Дата рождения — нативный ввод вместо Kivy TextInput ===
+        # ФИО
+        c_sync.add_widget(TLabel("ФИО (для восстановления аккаунта)",
+                                 size=12, color=C["text_muted"], height=dp(18)))
+        self.lbl_restore_name = FlatButton("Введите ФИО", height=48,
+                                           bg=C["white"], fg=C["text_muted"], size=16,
+                                           font=FONT, halign="center",
+                                           on_release=lambda *_: self._open_field_editor("name"))
+        c_sync.add_widget(self.lbl_restore_name)
+
+        # Дата рождения
+        c_sync.add_widget(TLabel("Дата рождения (ДД.ММ.ГГГГ)",
+                                 size=12, color=C["text_muted"], height=dp(18)))
+        self.lbl_restore_birth = FlatButton("дд.мм.гггг", height=48,
+                                            bg=C["white"], fg=C["text_muted"], size=16,
+                                            font=FONT, halign="center",
+                                            on_release=lambda *_: self._open_field_editor("birth"))
+        c_sync.add_widget(self.lbl_restore_birth)
+
         self.lbl_sync = TLabel("", size=12, color=C["text_muted"])
         c_sync.add_widget(self.lbl_sync)
         sync_btns = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
@@ -1181,6 +1278,7 @@ class SettingsScreen(Screen):
 
         body.add_widget(FlatButton("СОХРАНИТЬ НАСТРОЙКИ", height=54,
                                    on_release=lambda *_: self.save()))
+
         c4 = Card("Данные")
         c4.add_widget(TLabel("База: " + self.app.db.path, size=11,
                              color=C["text_muted"]))
@@ -1192,11 +1290,92 @@ class SettingsScreen(Screen):
                                              on_release=lambda *_: self.app.restore_controller.open())
         c4.add_widget(self.btn_restore_backup)
         body.add_widget(c4)
+
         body.add_widget(TLabel("Табель 2.0  •  учёт рабочего времени и выплат\nверсия 2.0.0",
                                size=12, color=C["text_muted"], halign="center"))
         body.add_widget(TLabel("С серверной синхронизацией", size=12,
                                color=C["accent_dark"], halign="center"))
         self.load()
+
+    # --- Нативный ввод для ФИО и даты рождения ---
+    def _open_field_editor(self, which, *_):
+        """Открывает нативный Android EditText для ФИО или даты рождения."""
+        # Снимаем фокус со всех Kivy TextInput
+        root = getattr(self.app, "root", None)
+        if root:
+            for w in root.walk():
+                if isinstance(w, TextInput) and w.focus:
+                    w.focus = False
+
+        if which == "name":
+            title = "ФИО (для восстановления аккаунта)"
+            current = self._restore_name_text
+            kind = "text"
+        else:
+            title = "Дата рождения (ДД.ММ.ГГГГ)"
+            current = self._restore_birth_text.replace(".", "")  # цифры без точек
+            kind = "number"
+
+        if not os.environ.get("ANDROID_ARGUMENT"):
+            # Десктоп: Popup
+            content = BoxLayout(orientation="vertical", spacing=dp(8), padding=[dp(10)] * 2)
+            inp = TextInput(text=current, hint_text=title, multiline=False,
+                            size_hint_y=None, height=dp(56),
+                            background_normal="", background_active="",
+                            background_color=C["white"], foreground_color=C["text"],
+                            font_name=FONT, font_size=sp(17), padding=[dp(10), dp(12)])
+            content.add_widget(inp)
+            row = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
+            popup = Popup(title=title, content=content, size_hint=(.9, None), height=dp(200))
+            def save(*_):
+                self._accept_field(which, inp.text)
+                popup.dismiss()
+            row.add_widget(FlatButton("Сохранить", height=44, on_release=save))
+            row.add_widget(FlatButton("Отмена", bg=C["surface_alt"], fg=C["text"],
+                                      height=44, on_release=lambda *_: popup.dismiss()))
+            content.add_widget(row)
+            popup.open()
+            return
+
+        try:
+            from field_editor import FieldEditor
+            if self._field_editor is None:
+                self._field_editor = FieldEditor()
+
+            def completed(status, value):
+                Clock.schedule_once(lambda *_: _restart_soft_keyboard(), 0.2)
+                if status == "ok":
+                    self._accept_field(which, value)
+
+            self._field_editor.open(title, current, kind, completed)
+        except Exception as ex:
+            toast("Не удалось открыть редактор: %s" % ex, "warn")
+
+    def _accept_field(self, which, value):
+        """Сохраняет результат нативного ввода в состояние и обновляет превью."""
+        if which == "name":
+            self._restore_name_text = value.strip()
+            self._update_restore_labels()
+        else:
+            digits = "".join(ch for ch in value if ch.isdigit())[:8]
+            self._restore_birth_text = _format_date_digits(digits)
+            self._update_restore_labels()
+
+    def _update_restore_labels(self):
+        """Обновляет текст кнопок-превью."""
+        if self._restore_name_text:
+            self.lbl_restore_name.text = self._restore_name_text
+            self.lbl_restore_name.color = C["text"]
+        else:
+            self.lbl_restore_name.text = "Введите ФИО"
+            self.lbl_restore_name.color = C["text_muted"]
+
+        if self._restore_birth_text:
+            self.lbl_restore_birth.text = self._restore_birth_text
+            self.lbl_restore_birth.color = C["text"]
+        else:
+            self.lbl_restore_birth.text = "дд.мм.гггг"
+            self.lbl_restore_birth.color = C["text_muted"]
 
     def load(self):
         db = self.app.db
@@ -1254,7 +1433,6 @@ class SettingsScreen(Screen):
                     self.app.db.set("employee_token", emp_token)
                     self.app.db.set("secret_key", emp_token)
                     self.app.sync_client.set_credentials(emp_id, emp_token)
-                    # Сразу спрашиваем сервер об ожидающих командах.
                     Clock.schedule_once(lambda *_: self.app._poll_sync(0), 1.5)
                     self.load()
                     toast("✓ Устройство привязано", "ok")
@@ -1270,8 +1448,9 @@ class SettingsScreen(Screen):
         if not (SYNC_AVAILABLE and self.app.sync_client):
             toast("Синхронизация недоступна", "warn")
             return
-        name = self.f_restore_name.input.text.strip()
-        birth_raw = self.f_restore_birth.input.text.strip()
+        # Читаем из переменных состояния (нативный ввод), а не из TextInput
+        name = self._restore_name_text.strip()
+        birth_raw = self._restore_birth_text.strip()
         if not name or not birth_raw:
             toast("Введите ФИО и дату рождения", "warn")
             return
@@ -1280,7 +1459,6 @@ class SettingsScreen(Screen):
             toast("Введите дату в формате ДД.ММ.ГГГГ", "warn")
             return
         birth_iso = birth_date.isoformat()
-
         self.btn_bind.disabled = True
         self.btn_restore.disabled = True
         self.lbl_sync.text = "Восстановление аккаунта…"
@@ -1306,9 +1484,7 @@ class SettingsScreen(Screen):
         self.app.db.set("employee_token", emp_token)
         self.app.db.set("secret_key", emp_token)
         self.app.sync_client.set_credentials(emp_id, emp_token)
-        # Сразу спрашиваем сервер об ожидающих командах (одобрения и т.п.).
         Clock.schedule_once(lambda *_: self.app._poll_sync(0), 1.5)
-
         days_imported = 0
         for item in result.get("timesheet_state", []):
             date = item.get("date", "")
@@ -1336,7 +1512,6 @@ class SettingsScreen(Screen):
                 days_imported += 1
             except Exception:
                 continue
-
         weeks_imported = 0
         for item in result.get("payment_state", []):
             week_id = item.get("week_id", "")
@@ -1351,7 +1526,6 @@ class SettingsScreen(Screen):
                     weeks_imported += 1
             except Exception:
                 continue
-
         self.load()
         try:
             self.app.s_day.load(self.app.current)
@@ -1397,6 +1571,7 @@ class TabelApp(App):
         self._backup_pending_path = None
         self._backup_result_bound = False
         self._restoring = False
+
         from restore_ui import RestoreController
         self.restore_controller = RestoreController(self)
 
@@ -1414,11 +1589,9 @@ class TabelApp(App):
             Clock.schedule_once(lambda *_: self._poll_sync(0), 3)
 
         Window.clearcolor = C["bg"]
-        # Клавиатура уменьшает окно по высоте: поле не перекрывается,
-        # а ScrollView сам подводит поле в видимую область.
         Window.softinput_mode = "resize"
-        root = BoxLayout(orientation="vertical")
 
+        root = BoxLayout(orientation="vertical")
         # шапка
         head = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(64),
                          padding=[dp(16), dp(8)])
@@ -1447,7 +1620,7 @@ class TabelApp(App):
 
         # нижняя навигация
         nav = BoxLayout(size_hint_y=None, height=dp(58), spacing=dp(2),
-                        padding=[dp(4), dp(4)])
+                         padding=[dp(4), dp(4)])
         with nav.canvas.before:
             Color(*C["surface"])
             nr = Rectangle()
@@ -1482,8 +1655,6 @@ class TabelApp(App):
             return
 
         def process(result):
-            # ВАЖНО: эта функция работает в фоновом потоке. Трогать базу
-            # и виджеты отсюда нельзя — переносим применение в главный поток.
             if not result.get("ok"):
                 return
             items = [it for it in result.get("items", [])
@@ -1526,9 +1697,6 @@ class TabelApp(App):
             self.s_hist.refresh()
 
     def on_resume(self):
-        # Возврат из внешних окон (выбор файла, системные диалоги): чиним
-        # софт-клавиатуру. Сначала снимаем фокус со всех полей, чтобы системе
-        # некуда было выбрасывать недописанный текст.
         def _heal(_dt):
             root = getattr(self, "root", None)
             if root is None:
@@ -1653,7 +1821,6 @@ class TabelApp(App):
             self._backup_done(cancelled=True)
             return
         import threading
-
         def copy_file():
             try:
                 from jnius import autoclass
@@ -1734,10 +1901,10 @@ def _num(v):
 
 def _parse_date_ru(text):
     """'05.10.2026' / '05/10/2026' / '05-10-2026' / '5.10.2026' / '05.10.26'
-    и '05102026' (8 цифр без разделителей, пока поле не потеряло фокус) -> date.
+    и '05102026' (8 цифр без разделителей) -> date.
     None, если ввод не распознан или дата не существует."""
     s = str(text or "").strip()
-    s = s.replace("/", ".").replace("-", ".").replace(" ", "")
+    s = s.replace("/", ".").replace("-", ".").replace("  ", " ")
     if not s:
         return None
     if s.isascii() and s.isdigit() and len(s) == 8:

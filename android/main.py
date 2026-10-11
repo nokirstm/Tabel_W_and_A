@@ -1313,7 +1313,7 @@ class SettingsScreen(Screen):
             kind = "text"
         else:
             title = "Дата рождения (ДД.ММ.ГГГГ)"
-            current = self._restore_birth_text.replace(".", "")  # цифры без точек
+            current = self._restore_birth_text  # TextWatcher сам нормализует
             kind = "number"
 
         if not os.environ.get("ANDROID_ARGUMENT"):

@@ -165,88 +165,84 @@ class TInput(TextInput):
             input_type="number" if (numeric or date_mask) else "text",
             write_tab=False, **kw)
         self._date_mask = date_mask
-        self._mask_busy = False
         with self.canvas.after:
             self._c = Color(*C["border"])
             self._l = Line(width=1.2)
         self.bind(pos=self._sync, size=self._sync, focus=self._focus)
-        if date_mask:
-            self.bind(text=self._on_date_text)
 
     def _sync(self, *_):
         self._l.rounded_rectangle = (self.x, self.y, self.width, self.height, dp(8))
 
-    def _on_date_text(self, _w, value):
-        """Маска даты дд.мм.гггг: цифры с цифровой клавиатуры, точки сами.
-        ISO-строку из базы (2026-10-10) разворачивает в дд.мм.гггг."""
-        if self._mask_busy:
-            return
-        try:
-            text = value.strip() if value else ""
-            if len(text) == 10 and text[4] == "-" and text[7] == "-":
-                text = text[8:10] + "." + text[5:7] + "." + text[0:4]
-            digits = "".join(ch for ch in text if ch.isdigit())[:8]
-            if len(digits) > 4:
-                fmt = digits[:2] + "." + digits[2:4] + "." + digits[4:]
-            elif len(digits) > 2:
-                fmt = digits[:2] + "." + digits[2:]
-            else:
-                fmt = digits
-            if fmt != value:
-                self._mask_busy = True
-                self.text = fmt
-                self.cursor = len(fmt)
-                self._mask_busy = False
-        except Exception as ex:
-            from kivy.logger import Logger
-            Logger.exception("date mask failed: %s" % ex)
-            self._mask_busy = False
-
     def _focus(self, _w, val):
-        # ВАЖНО: здесь нельзя трогать InputMethodManager: перезапуск соединения
-        # при смене фокуса выбрасывает недописанный текст соседнего поля и может
-        # убить доставку символов. Починка клавиатуры живёт только в on_resume
-        # приложения и после закрытия нативного редактора.
+        # InputMethodManager здесь не трогаем: починка живёт в on_touch_down
+        # (после улёгшегося фокуса) и в on_resume приложения.
         self._c.rgba = C["accent"] if val else C["border"]
         if val:
             self._scroll_into_view()
 
-    def on_touch_down(self, touch):
-        # Безопасное окно починки IME — момент ДО взятия фокуса этим полем.
-        # Снимаем фокус со всех полей и перезапускаем соединение, когда ни одно
-        # поле его не держит: IME некуда выбрасывать composing-текст соседа,
-        # доставка символов не умирает. Тот же принцип, что после нативного редактора.
-        if (not self.focus and not self.disabled
-                and self.collide_point(*touch.pos)):
-            app = App.get_running_app()
-            root = getattr(app, "root", None) if app else None
-            if root is not None:
-                for w in root.walk():
-                    if isinstance(w, TextInput) and w.focus:
-                        w.focus = False
-                _restart_soft_keyboard()
-        return super().on_touch_down(touch)
-
     def _scroll_into_view(self, *_):
-        """Подводит поле в видимую область после открытия клавиатуры."""
+        """Подводит поле в видимую область после открытия клавиатуры (resize)."""
         sv = self.parent
         while sv is not None and not isinstance(sv, ScrollView):
             sv = sv.parent
         if sv is None:
             return
         Clock.schedule_once(lambda *_a: sv.scroll_to(self, padding=dp(12)), 0.3)
-        if val:
-            self._scroll_into_view()
 
+    def on_touch_down(self, touch):
+        """Безопасная починка IME: снять фокус соседей, дать фокусу улечься,
+        затем пересоздать соединение. Касание ужеFocused поля тоже чинит."""
+        if self.disabled or not self.collide_point(*touch.pos):
+            return super().on_touch_down(touch)
+        if not self.focus:
+            app = App.get_running_app()
+            root = getattr(app, "root", None) if app else None
+            if root is not None:
+                for w in root.walk():
+                    if isinstance(w, TextInput) and w.focus:
+                        w.focus = False
+        res = super().on_touch_down(touch)
+        Clock.schedule_once(lambda *_: _restart_soft_keyboard(), 0.08)
+        return res
 
-    def _scroll_into_view(self, *_):
-        """Подводит поле в видимую область при открытой клавиатуре (resize)."""
-        sv = self.parent
-        while sv is not None and not isinstance(sv, ScrollView):
-            sv = sv.parent
-        if sv is None:
+    # --- маска даты дд.мм.гггг: только через вставку/удаление, без переписывания text ---
+    def _date_digits(self):
+        return "".join(ch for ch in self.text if ch.isdigit())[:8]
+
+    @staticmethod
+    def _date_format(digits):
+        if len(digits) > 4:
+            s = digits[:2] + "." + digits[2:4] + "." + digits[4:]
+        elif len(digits) > 2:
+            s = digits[:2] + "." + digits[2:]
+        else:
+            s = digits
+        if len(digits) in (2, 4):
+            s += "."
+        return s
+
+    def _date_set(self, digits):
+        txt = self._date_format(digits)
+        self.text = txt
+        self.cursor = len(txt)
+
+    def insert_text(self, substring, from_undo=False):
+        if not self._date_mask:
+            return super().insert_text(substring, from_undo)
+        added = "".join(ch for ch in substring if ch.isdigit())
+        if not added:
             return
-        Clock.schedule_once(lambda *_a: sv.scroll_to(self, padding=dp(12)), 0.25)
+        self._date_set(self._date_digits() + added)
+
+    def do_backspace(self):
+        if not self._date_mask:
+            return super().do_backspace()
+        self._date_set(self._date_digits()[:-1])
+
+    def delete_selection(self, *a):
+        if not self._date_mask:
+            return super().delete_selection(*a)
+        self._date_set("")
 
 
 class FlatButton(Button):
@@ -982,6 +978,8 @@ class WeekScreen(Screen):
                                     "Все заполненные дни одобрены" if complete else
                                     "Дата станет доступна после одобрения всех заполненных дней")
         received_on = self.app.db.received_on(d) if complete else ""
+        if len(received_on) == 10 and received_on[4] == "-" and received_on[7] == "-":
+            received_on = received_on[8:10] + "." + received_on[5:7] + "." + received_on[0:4]
         self.f_received.input.text = received_on
         # Блокировать сам TextInput, а не контейнер BoxLayout — иначе поле выглядит активным, но ввод не работает
         self.f_received.input.disabled = not complete or closed

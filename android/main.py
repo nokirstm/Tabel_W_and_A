@@ -1275,12 +1275,11 @@ class SettingsScreen(Screen):
         if not name or not birth_raw:
             toast("Введите ФИО и дату рождения", "warn")
             return
-        try:
-            birth_date = dt.datetime.strptime(birth_raw, "%d.%m.%Y").date()
-            birth_iso = birth_date.isoformat()
-        except ValueError:
+        birth_date = _parse_date_ru(birth_raw)
+        if birth_date is None:
             toast("Введите дату в формате ДД.ММ.ГГГГ", "warn")
             return
+        birth_iso = birth_date.isoformat()
 
         self.btn_bind.disabled = True
         self.btn_restore.disabled = True

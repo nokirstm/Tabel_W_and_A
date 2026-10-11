@@ -174,6 +174,18 @@ class TInput(TextInput):
         # убить доставку символов. Починка клавиатуры живёт только в on_resume
         # приложения и после закрытия нативного редактора.
         self._c.rgba = C["accent"] if val else C["border"]
+        if val:
+            self._scroll_into_view()
+
+
+    def _scroll_into_view(self, *_):
+        """Подводит поле в видимую область при открытой клавиатуре (resize)."""
+        sv = self.parent
+        while sv is not None and not isinstance(sv, ScrollView):
+            sv = sv.parent
+        if sv is None:
+            return
+        Clock.schedule_once(lambda *_a: sv.scroll_to(self, padding=dp(12)), 0.25)
 
 
 class FlatButton(Button):
@@ -1358,8 +1370,9 @@ class TabelApp(App):
             Clock.schedule_once(lambda *_: self._poll_sync(0), 3)
 
         Window.clearcolor = C["bg"]
-        # Поднимать поле ввода над клавиатурой, иначе клавиатура перекрывает ввод даты
-        Window.softinput_mode = "below_target"
+        # Клавиатура уменьшает окно по высоте: поле не перекрывается,
+        # а ScrollView сам подводит поле в видимую область.
+        Window.softinput_mode = "resize"
         root = BoxLayout(orientation="vertical")
 
         # шапка

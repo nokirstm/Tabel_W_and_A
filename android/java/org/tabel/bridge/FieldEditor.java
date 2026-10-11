@@ -3,8 +3,9 @@ package org.tabel.bridge;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.DialogInterface;
+import android.text.Editable;
 import android.text.InputType;
-import android.view.Gravity;
+import android.text.TextWatcher;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -36,7 +37,7 @@ public class FieldEditor {
             @Override
             public void run() {
                 try {
-                    EditText edit = new EditText(activity);
+                    final EditText edit = new EditText(activity);
 
                     if ("number".equals(inputKind)) {
                         edit.setInputType(InputType.TYPE_CLASS_NUMBER);
@@ -48,12 +49,54 @@ public class FieldEditor {
                         );
                     }
                     edit.setSingleLine(true);
-                    edit.setText(current != null ? current : "");
-                    edit.setSelection(edit.getText().length());
 
-                    // Отступы внутри поля
                     int pad = (int) (16 * activity.getResources().getDisplayMetrics().density);
                     edit.setPadding(pad, pad, pad, pad);
+
+                    // --- АВТОФОРМАТ ДАТЫ: точки после 2-й и 4-й цифры ---
+                    if ("number".equals(inputKind)) {
+                        edit.addTextChangedListener(new TextWatcher() {
+                            private boolean updating = false;
+
+                            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
+                            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
+
+                            @Override
+                            public void afterTextChanged(Editable s) {
+                                if (updating) return;
+                                updating = true;
+                                try {
+                                    // только цифры, максимум 8
+                                    StringBuilder digits = new StringBuilder();
+                                    for (int i = 0; i < s.length(); i++) {
+                                        char ch = s.charAt(i);
+                                        if (ch >= '0' && ch <= '9') {
+                                            digits.append(ch);
+                                            if (digits.length() == 8) break;
+                                        }
+                                    }
+                                    // расставляем точки: дд.мм.гггг
+                                    StringBuilder fmt = new StringBuilder();
+                                    for (int i = 0; i < digits.length(); i++) {
+                                        if (i == 2 || i == 4) fmt.append('.');
+                                        fmt.append(digits.charAt(i));
+                                    }
+                                    String out = fmt.toString();
+                                    if (!out.equals(s.toString())) {
+                                        s.replace(0, s.length(), out);
+                                    }
+                                    edit.setSelection(out.length());
+                                } finally {
+                                    updating = false;
+                                }
+                            }
+                        });
+                    }
+
+                    // Устанавливаем ТЕКУЩЕЕ значение ПОСЛЕ подключения TextWatcher,
+                    // чтобы маска сразу сработала (если пришли точки или лишние символы).
+                    edit.setText(current != null ? current : "");
+                    edit.setSelection(edit.getText().length());
 
                     LinearLayout container = new LinearLayout(activity);
                     container.setOrientation(LinearLayout.VERTICAL);
@@ -85,7 +128,6 @@ public class FieldEditor {
                         .setOnDismissListener(new DialogInterface.OnDismissListener() {
                             @Override
                             public void onDismiss(DialogInterface d) {
-                                // Прячем клавиатуру при закрытии
                                 InputMethodManager imm = (InputMethodManager)
                                     activity.getSystemService(Activity.INPUT_METHOD_SERVICE);
                                 if (imm != null && activity.getCurrentFocus() != null) {

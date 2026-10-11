@@ -62,6 +62,9 @@ SYNC_API_URL = ("https://script.google.com/macros/s/"
                 "AKfycbwDWAS8t__5y3WdFudGQa8OMyWxxBYl56tiJY5RHjR1EmBPiyTrlXUpa2CcmI-q3sQBdQ/exec")
 SYNC_API_TOKEN = "28096b2395454f05a7ce7a2b0fcfe3b2e58fd9bed8d5465db4560056a662659c"
 
+# Клавиатура уменьшает окно вместо перекрытия поля. Выставляется ОДИН раз здесь:
+# переприсваивание режима на каждом фокусе перезапускает соединение IME.
+Window.softinput_mode = "resize"
 C = {k: hexc(v) for k, v in T.items()}
 
 # --- шрифты с кириллицей ---
@@ -206,10 +209,23 @@ class TInput(TextInput):
         # приложения и после закрытия нативного редактора.
         self._c.rgba = C["accent"] if val else C["border"]
         if val:
-            # Перебиваем панорамный режим, если он остался в build(): окно
-            # уменьшается на высоту клавиатуры,タッチ-рассинхрон не возникает.
-            Window.softinput_mode = "resize"
             self._scroll_into_view()
+
+    def on_touch_down(self, touch):
+        # Безопасное окно починки IME — момент ДО взятия фокуса этим полем.
+        # Снимаем фокус со всех полей и перезапускаем соединение, когда ни одно
+        # поле его не держит: IME некуда выбрасывать composing-текст соседа,
+        # доставка символов не умирает. Тот же принцип, что после нативного редактора.
+        if (not self.focus and not self.disabled
+                and self.collide_point(*touch.pos)):
+            app = App.get_running_app()
+            root = getattr(app, "root", None) if app else None
+            if root is not None:
+                for w in root.walk():
+                    if isinstance(w, TextInput) and w.focus:
+                        w.focus = False
+                _restart_soft_keyboard()
+        return super().on_touch_down(touch)
 
     def _scroll_into_view(self, *_):
         """Подводит поле в видимую область после открытия клавиатуры."""
@@ -1162,7 +1178,7 @@ class SettingsScreen(Screen):
         self.f_emp_id.input.disabled = True
         c_sync.add_widget(self.f_emp_id)
         self.f_restore_name = field("ФИО (для восстановления аккаунта)", "")
-        self.f_restore_birth = field("Дата рождения (ДД.ММ.ГГГГ)", "")
+        self.f_restore_birth = field("Дата рождения (ДД.ММ.ГГГГ)", "", date_mask=True)
         c_sync.add_widget(self.f_restore_name)
         c_sync.add_widget(self.f_restore_birth)
         self.lbl_sync = TLabel("", size=12, color=C["text_muted"])

@@ -178,20 +178,25 @@ class TInput(TextInput):
         ISO-строку из базы (2026-10-10) разворачивает в дд.мм.гггг."""
         if self._mask_busy:
             return
-        text = value.strip()
-        if len(text) == 10 and text[4] == "-" and text[7] == "-":
-            text = text[8:10] + "." + text[5:7] + "." + text[0:4]
-        digits = "".join(ch for ch in text if ch.isdigit())[:8]
-        if len(digits) > 4:
-            fmt = digits[:2] + "." + digits[2:4] + "." + digits[4:]
-        elif len(digits) > 2:
-            fmt = digits[:2] + "." + digits[2:]
-        else:
-            fmt = digits
-        if fmt != value:
-            self._mask_busy = True
-            self.text = fmt
-            self.cursor = len(fmt)
+        try:
+            text = value.strip() if value else ""
+            if len(text) == 10 and text[4] == "-" and text[7] == "-":
+                text = text[8:10] + "." + text[5:7] + "." + text[0:4]
+            digits = "".join(ch for ch in text if ch.isdigit())[:8]
+            if len(digits) > 4:
+                fmt = digits[:2] + "." + digits[2:4] + "." + digits[4:]
+            elif len(digits) > 2:
+                fmt = digits[:2] + "." + digits[2:]
+            else:
+                fmt = digits
+            if fmt != value:
+                self._mask_busy = True
+                self.text = fmt
+                self.cursor = len(fmt)
+                self._mask_busy = False
+        except Exception as ex:
+            from kivy.logger import Logger
+            Logger.exception("date mask failed: %s" % ex)
             self._mask_busy = False
 
     def _focus(self, _w, val):

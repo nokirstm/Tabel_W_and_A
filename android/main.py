@@ -1006,7 +1006,7 @@ class WeekScreen(Screen):
                     w.focus = False
 
         title = "Дата получения"
-        current = self._received_date_text.replace(".", "")  # показываем цифры
+        current = self._received_date_text  # TextWatcher сам нормализует
 
         if not os.environ.get("ANDROID_ARGUMENT"):
             # Десктоп: простой Popup

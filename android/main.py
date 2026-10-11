@@ -151,22 +151,48 @@ class TLabel(Label):
 
 
 class TInput(TextInput):
-    def __init__(self, hint="", numeric=False, height=48, multiline=False, **kw):
+    def __init__(self, hint="", numeric=False, height=48, multiline=False,
+                 date_mask=False, **kw):
         super().__init__(
             hint_text=hint, multiline=multiline,
             background_normal="", background_active="", background_color=C["white"],
             foreground_color=C["text"], cursor_color=C["accent"],
             hint_text_color=C["text_muted"], font_name=FONT, font_size=sp(17),
             padding=[dp(10), dp(12)], size_hint_y=None, height=dp(height),
-            input_type="number" if numeric else "text",
+            input_type="number" if (numeric or date_mask) else "text",
             write_tab=False, **kw)
+        self._date_mask = date_mask
+        self._mask_busy = False
         with self.canvas.after:
             self._c = Color(*C["border"])
             self._l = Line(width=1.2)
         self.bind(pos=self._sync, size=self._sync, focus=self._focus)
+        if date_mask:
+            self.bind(text=self._on_date_text)
 
     def _sync(self, *_):
         self._l.rounded_rectangle = (self.x, self.y, self.width, self.height, dp(8))
+
+    def _on_date_text(self, _w, value):
+        """Маска даты дд.мм.гггг: цифры с цифровой клавиатуры, точки сами.
+        ISO-строку из базы (2026-10-10) разворачивает в дд.мм.гггг."""
+        if self._mask_busy:
+            return
+        text = value.strip()
+        if len(text) == 10 and text[4] == "-" and text[7] == "-":
+            text = text[8:10] + "." + text[5:7] + "." + text[0:4]
+        digits = "".join(ch for ch in text if ch.isdigit())[:8]
+        if len(digits) > 4:
+            fmt = digits[:2] + "." + digits[2:4] + "." + digits[4:]
+        elif len(digits) > 2:
+            fmt = digits[:2] + "." + digits[2:]
+        else:
+            fmt = digits
+        if fmt != value:
+            self._mask_busy = True
+            self.text = fmt
+            self.cursor = len(fmt)
+            self._mask_busy = False
 
     def _focus(self, _w, val):
         # ВАЖНО: здесь нельзя трогать InputMethodManager: перезапуск соединения
@@ -174,6 +200,20 @@ class TInput(TextInput):
         # убить доставку символов. Починка клавиатуры живёт только в on_resume
         # приложения и после закрытия нативного редактора.
         self._c.rgba = C["accent"] if val else C["border"]
+        if val:
+            # Перебиваем панорамный режим, если он остался в build(): окно
+            # уменьшается на высоту клавиатуры,タッチ-рассинхрон не возникает.
+            Window.softinput_mode = "resize"
+            self._scroll_into_view()
+
+    def _scroll_into_view(self, *_):
+        """Подводит поле в видимую область после открытия клавиатуры."""
+        sv = self.parent
+        while sv is not None and not isinstance(sv, ScrollView):
+            sv = sv.parent
+        if sv is None:
+            return
+        Clock.schedule_once(lambda *_a: sv.scroll_to(self, padding=dp(12)), 0.3)
         if val:
             self._scroll_into_view()
 
@@ -275,12 +315,12 @@ class Row(BoxLayout):
         self.value = b
 
 
-def field(label, hint="", numeric=False, on_text=None, height=48):
+def field(label, hint="", numeric=False, on_text=None, height=48, date_mask=False):
     """Подпись + поле ввода в вертикальной коробке."""
     box = BoxLayout(orientation="vertical", size_hint_y=None,
                     height=dp(height + 20), spacing=dp(2))
     box.add_widget(TLabel(label, size=12, color=C["text_muted"], height=dp(18)))
-    inp = TInput(hint=hint, numeric=numeric, height=height)
+    inp = TInput(hint=hint, numeric=numeric, height=height, date_mask=date_mask)
     if on_text:
         inp.bind(text=lambda *a: on_text())
     box.add_widget(inp)
@@ -908,7 +948,7 @@ class WeekScreen(Screen):
         self.payment_box = Card("Сумма получена", bg=C["surface_alt"], radius=10)
         self.payment_status = TLabel("", size=13, color=C["text_muted"])
         self.payment_box.add_widget(self.payment_status)
-        self.f_received = field("Дата получения", "дд.мм.гггг")
+        self.f_received = field("Дата получения", "дд.мм.гггг", date_mask=True)
         self.f_received.input.bind(text=lambda *_: self._received_date_changed())
         self.payment_box.add_widget(self.f_received)
         self.received_toggle = Toggle("Получил", self._received_toggle)

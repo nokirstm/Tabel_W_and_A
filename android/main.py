@@ -910,7 +910,8 @@ class WeekScreen(Screen):
                                     "Дата станет доступна после одобрения всех заполненных дней")
         received_on = self.app.db.received_on(d) if complete else ""
         self.f_received.input.text = received_on
-        self.f_received.disabled = not complete or closed
+        # Блокировать сам TextInput, а не контейнер BoxLayout — иначе поле выглядит активным, но ввод не работает
+        self.f_received.input.disabled = not complete or closed
         self.received_toggle.disabled = not complete or closed or not received_on.strip()
         self.received_toggle.set(closed)
         self.body.add_widget(self.payment_box)
@@ -1357,6 +1358,8 @@ class TabelApp(App):
             Clock.schedule_once(lambda *_: self._poll_sync(0), 3)
 
         Window.clearcolor = C["bg"]
+        # Поднимать поле ввода над клавиатурой, иначе клавиатура перекрывает ввод даты
+        Window.softinput_mode = "below_target"
         root = BoxLayout(orientation="vertical")
 
         # шапка

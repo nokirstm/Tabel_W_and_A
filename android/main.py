@@ -169,13 +169,20 @@ class TInput(TextInput):
             self._c = Color(*C["border"])
             self._l = Line(width=1.2)
         self.bind(pos=self._sync, size=self._sync, focus=self._focus)
+        if date_mask:
+            # Во время ввода поле содержит ровно то, что видит IME: только цифры,
+            # без переписываний. Точки появляются один раз при потере фокуса.
+            self.input_filter = self._date_filter
+            self.bind(focus=self._date_focus)
 
     def _sync(self, *_):
         self._l.rounded_rectangle = (self.x, self.y, self.width, self.height, dp(8))
 
     def _focus(self, _w, val):
-        # InputMethodManager здесь не трогаем: починка живёт в on_touch_down
-        # (после улёгшегося фокуса) и в on_resume приложения.
+        # ВАЖНО: здесь и после касания нельзя трогать InputMethodManager:
+        # перезапуск при поле с фокусом убивает доставку клавиш, включая
+        # backspace в соседних полях. Починка живёт только в on_resume
+        # приложения и после закрытия нативного редактора.
         self._c.rgba = C["accent"] if val else C["border"]
         if val:
             self._scroll_into_view()
@@ -190,8 +197,8 @@ class TInput(TextInput):
         Clock.schedule_once(lambda *_a: sv.scroll_to(self, padding=dp(12)), 0.3)
 
     def on_touch_down(self, touch):
-        """Безопасная починка IME: снять фокус соседей, дать фокусу улечься,
-        затем пересоздать соединение. Касание ужеFocused поля тоже чинит."""
+        # Перед взятием фокуса снимаем фокус с соседей, чтобы IME не выбрасывал
+        # composing-текст в новое поле. Перезапуска соединения здесь НЕТ.
         if self.disabled or not self.collide_point(*touch.pos):
             return super().on_touch_down(touch)
         if not self.focus:
@@ -201,48 +208,27 @@ class TInput(TextInput):
                 for w in root.walk():
                     if isinstance(w, TextInput) and w.focus:
                         w.focus = False
-        res = super().on_touch_down(touch)
-        Clock.schedule_once(lambda *_: _restart_soft_keyboard(), 0.08)
-        return res
+        return super().on_touch_down(touch)
 
-    # --- маска даты дд.мм.гггг: только через вставку/удаление, без переписывания text ---
-    def _date_digits(self):
-        return "".join(ch for ch in self.text if ch.isdigit())[:8]
+    # --- маска даты: цифры во время ввода, дд.мм.гггг при потере фокуса ---
+    def _date_filter(self, value, from_undo=False):
+        return "".join(ch for ch in value if ch.isdigit())
 
-    @staticmethod
-    def _date_format(digits):
+    def _date_focus(self, _w, val):
+        if not val:
+            self._date_commit()
+
+    def _date_commit(self):
+        digits = "".join(ch for ch in self.text if ch.isdigit())[:8]
         if len(digits) > 4:
-            s = digits[:2] + "." + digits[2:4] + "." + digits[4:]
+            fmt = digits[:2] + "." + digits[2:4] + "." + digits[4:]
         elif len(digits) > 2:
-            s = digits[:2] + "." + digits[2:]
+            fmt = digits[:2] + "." + digits[2:]
         else:
-            s = digits
-        if len(digits) in (2, 4):
-            s += "."
-        return s
-
-    def _date_set(self, digits):
-        txt = self._date_format(digits)
-        self.text = txt
-        self.cursor = len(txt)
-
-    def insert_text(self, substring, from_undo=False):
-        if not self._date_mask:
-            return super().insert_text(substring, from_undo)
-        added = "".join(ch for ch in substring if ch.isdigit())
-        if not added:
-            return
-        self._date_set(self._date_digits() + added)
-
-    def do_backspace(self):
-        if not self._date_mask:
-            return super().do_backspace()
-        self._date_set(self._date_digits()[:-1])
-
-    def delete_selection(self, *a):
-        if not self._date_mask:
-            return super().delete_selection(*a)
-        self._date_set("")
+            fmt = digits
+        if fmt != self.text:
+            self.text = fmt
+            self.cursor = len(fmt)
 
 
 class FlatButton(Button):
@@ -1748,12 +1734,15 @@ def _num(v):
 
 
 def _parse_date_ru(text):
-    """'05.10.2026' / '05/10/2026' / '05-10-2026' / '5.10.2026' / '05.10.26' -> date.
+    """'05.10.2026' / '05/10/2026' / '05-10-2026' / '5.10.2026' / '05.10.26'
+    и '05102026' (8 цифр без разделителей, пока поле не потеряло фокус) -> date.
     None, если ввод не распознан или дата не существует."""
     s = str(text or "").strip()
     s = s.replace("/", ".").replace("-", ".").replace(" ", "")
     if not s:
         return None
+    if s.isascii() and s.isdigit() and len(s) == 8:
+        s = s[:2] + "." + s[2:4] + "." + s[4:]
     parts = s.split(".")
     if len(parts) != 3:
         return None

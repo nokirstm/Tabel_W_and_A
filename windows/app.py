@@ -215,9 +215,8 @@ class App(tk.Tk):
         self.sync_log_path = os.path.join(os.path.dirname(self.db.path), "sync_log.txt")
         
         ui.install_styles(self)
-        self._build_header()
-        
         self.role = self.db.get("role", "employee")
+        self._build_header()
         if self.role == "manager":
             self._build_manager_ui()
         else:
@@ -250,10 +249,24 @@ class App(tk.Tk):
         tk.Label(left, text=f"Режим: {role_text}", bg=T["accent"], fg="#DCEBF8", font=F_SMALL).pack(anchor="w")
 
     def _build_manager_ui(self):
+        nb = getattr(self, "nb", None)
+        if nb is not None:
+            nb.destroy()
+            self.nb = None
+        mr = getattr(self, "manager_root", None)
+        if mr is not None:
+            mr.destroy()
         self.manager_root = ManagerRoot(self)
         self.manager_root.pack(fill="both", expand=True, padx=16, pady=12)
 
     def _build_employee_ui(self):
+        mr = getattr(self, "manager_root", None)
+        if mr is not None:
+            mr.destroy()
+            self.manager_root = None
+        nb = getattr(self, "nb", None)
+        if nb is not None:
+            nb.destroy()
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True, padx=16, pady=(12, 16))
         self.tab_day = tk.Frame(self.nb, bg=T["bg"])

@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Сетевой клиент синхронизации. Зеркалируется в core/ и android/"""
+"""Сетевой клиент синхронизации.
+ЗЕРКАЛО: core/sync_client.py и android/sync_client.py обязаны совпадать байт-в-байт."""
 import os
-import json
 import uuid
 import threading
 import requests
+
 
 class SyncClient:
     def __init__(self, api_url, api_token, device_id_file):
@@ -16,16 +17,21 @@ class SyncClient:
         self.employee_token = ""
 
     def _load_or_create_device_id(self):
-        if os.path.exists(self.device_id_file):
-            with open(self.device_id_file, "r", encoding="utf-8") as f:
-                return f.read().strip()
-        new_id = str(uuid.uuid4())
         try:
-            with open(self.device_id_file, "w", encoding="utf-8") as f:
-                f.write(new_id)
+            if os.path.exists(self.device_id_file):
+                with open(self.device_id_file, "r", encoding="utf-8") as f:
+                    did = f.read().strip()
+                if did:
+                    return did
         except Exception:
             pass
-        return new_id
+        did = str(uuid.uuid4())
+        try:
+            with open(self.device_id_file, "w", encoding="utf-8") as f:
+                f.write(did)
+        except Exception:
+            pass
+        return did
 
     def set_credentials(self, employee_id, employee_token):
         self.employee_id = str(employee_id or "")
@@ -37,13 +43,37 @@ class SyncClient:
             "command": command,
             "device_id": self.device_id,
             "request_id": str(uuid.uuid4()),
-            "payload": payload or {}
+            "payload": payload or {},
         }
-        if employee_id: data["employee_id"] = employee_id
-        if employee_token: data["employee_token"] = employee_token
-        
+        if employee_id:
+            data["employee_id"] = employee_id
+        if employee_token:
+            data["employee_token"] = employee_token
+        # Повтор при таймауте: холодный старт Apps Script после публикации
+        # может греться дольше 15 секунд. Для опроса очереди повтор запрещён,
+        # чтобы два опроса не наложились и не пометили команды дважды.
+        attempts = 1 if command == "poll_commands" else 2
+        last = {"ok": False, "error": "timeout"}
+        for _ in range(attempts):
+            try:
+                resp = requests.post(self.api_url, json=data, timeout=15)
+                return resp.json()
+            except requests.exceptions.Timeout:
+                last = {"ok": False, "error": "timeout"}
+            except requests.exceptions.ConnectionError:
+                return {"ok": False, "error": "no_connection"}
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
+        return last
+
+    def _get_queue(self):
         try:
-            resp = requests.post(self.api_url, json=data, timeout=15)
+            resp = requests.get(
+                self.api_url,
+                params={"api_token": self.api_token,
+                        "deviceId": self.device_id,
+                        "markDelivered": "1"},
+                timeout=15)
             return resp.json()
         except requests.exceptions.Timeout:
             return {"ok": False, "error": "timeout"}
@@ -63,10 +93,12 @@ class SyncClient:
                     res = self._make_request("create_employee", {"manager_id": args[0], "manager_token": args[1], "name": args[2], "birth_date": args[3]})
                 elif method_name == "list_employees":
                     res = self._make_request("list_employees", {"manager_id": args[0], "manager_token": args[1]})
+                elif method_name == "attach_employee":
+                    res = self._make_request("attach_employee", {"manager_id": args[0], "manager_token": args[1], "name": args[2], "birth_date": args[3]})
                 elif method_name == "bind_device":
-                    res = self._make_request("bind_device", {"employee_token": args[0], "name": args[1] if len(args)>1 else None, "birth_date": args[2] if len(args)>2 else None})
+                    res = self._make_request("bind_device", {"employee_token": args[0], "name": args[1] if len(args) > 1 else None, "birth_date": args[2] if len(args) > 2 else None})
                 elif method_name == "restore_account":
-                    res = self._make_request("restore_account", {"name": args[0], "birth_date": args[1], "device_type": args[2] if len(args)>2 else "android"})
+                    res = self._make_request("restore_account", {"name": args[0], "birth_date": args[1], "device_type": args[2] if len(args) > 2 else "android"})
                 elif method_name == "day_updated":
                     res = self._make_request("day_updated", {"date": args[2], "entry": args[3], "version": args[4]}, args[0], args[1])
                 elif method_name == "day_approved":
@@ -82,17 +114,13 @@ class SyncClient:
                 elif method_name == "payment_received":
                     res = self._make_request("payment_received", {"week_id": args[2], "payment_date": args[3], "payment_confirmed": True, "version": args[4]}, args[0], args[1])
                 elif method_name == "poll_commands":
-                    try:
-                        resp = requests.get(self.api_url, params={"api_token": self.api_token, "deviceId": self.device_id, "markDelivered": "1"}, timeout=15)
-                        res = resp.json()
-                    except Exception as e:
-                        res = {"ok": False, "error": str(e)}
+                    res = self._get_queue()
                 else:
                     res = {"ok": False, "error": "unknown_command"}
-                
                 if callback:
                     callback(res)
             except Exception as e:
-                if callback: callback({"ok": False, "error": str(e)})
+                if callback:
+                    callback({"ok": False, "error": str(e)})
 
         threading.Thread(target=worker, daemon=True).start()

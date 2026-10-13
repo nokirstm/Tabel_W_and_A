@@ -4,6 +4,7 @@ import os
 import sys
 import json
 import queue
+import traceback
 import datetime as dt
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -1051,7 +1052,13 @@ class App(tk.Tk):
         ev = getattr(self, "_employee_view", None)
         if ev is not None:
             ev.destroy()
-        self._employee_view = EmployeeView(self, emp)
+            self._employee_view = None
+        try:
+            self._employee_view = EmployeeView(self, emp)
+        except Exception:
+            self._employee_view = None
+            messagebox.showerror("Сбой экрана сотрудника", traceback.format_exc())
+            return
         if self.manager_root is not None:
             self.manager_root.pack_forget()
         self._employee_view.pack(fill="both", expand=True, padx=14, pady=(0, 12))

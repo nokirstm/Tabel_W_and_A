@@ -336,6 +336,14 @@ class CreateEmployeeDialog(tk.Toplevel):
         self.f_name.pack(fill="x", pady=(10, 0))
         self.f_birth = Field(pad, "Дата рождения", width=12, hint="ДД.ММ.ГГГГ")
         self.f_birth.pack(fill="x", pady=(8, 0))
+        self.var_attach = tk.BooleanVar(value=False)
+        tk.Checkbutton(pad,
+                       text="Сотрудник уже регистрировался ранее — привязать его "
+                            "существующий аккаунт (история и телефон сохранятся)",
+                       variable=self.var_attach, bg=T["surface"],
+                       activebackground=T["surface"], font=F_SMALL,
+                       anchor="w", justify="left", wraplength=400,
+                       highlightthickness=0, bd=0).pack(anchor="w", pady=(8, 0))
         self.lbl_err = tk.Label(pad, text="", bg=T["surface"], fg=T["danger"], font=F_SMALL)
         self.lbl_err.pack(anchor="w", pady=(8, 0))
         row = tk.Frame(pad, bg=T["surface"])
@@ -354,9 +362,14 @@ class CreateEmployeeDialog(tk.Toplevel):
         self.btn_ok.config(state="disabled")
         mgr_id = self.app.db.get("manager_id", "")
         mgr_tok = self.app.db.get("manager_token", "")
-        self.app.sync_client.send_async(
-            "create_employee", mgr_id, mgr_tok, name, birth.isoformat(),
-            callback=lambda r, n=name: self.app.sync_queue.put(("create_emp", r, n)))
+        if self.var_attach.get():
+            self.app.sync_client.send_async(
+                "attach_employee", mgr_id, mgr_tok, name, birth.isoformat(),
+                callback=lambda r, n=name: self.app.sync_queue.put(("attach_emp", r, n)))
+        else:
+            self.app.sync_client.send_async(
+                "create_employee", mgr_id, mgr_tok, name, birth.isoformat(),
+                callback=lambda r, n=name: self.app.sync_queue.put(("create_emp", r, n)))
 
 
 # ------------------------------------------------------------------ приложение
@@ -474,6 +487,8 @@ class App(tk.Tk):
                         self._on_create_manager_result(rest[0], rest[1] if len(rest) > 1 else "")
                     elif kind == "create_emp":
                         self._on_create_emp_result(rest[0], rest[1] if len(rest) > 1 else "")
+                    elif kind == "attach_emp":
+                        self._on_attach_result(rest[0], rest[1] if len(rest) > 1 else "")
                     elif kind == "restore":
                         self._on_restore_result(rest[0], rest[1] if len(rest) > 1 else "")
                     elif kind == "unlinked":
@@ -674,6 +689,18 @@ class App(tk.Tk):
                 mr.refresh_list()
         else:
             ui.toast(self, "Ошибка создания: %s" % result.get("error"), "err")
+
+    def _on_attach_result(self, result, name):
+        if result.get("ok"):
+            if result.get("status") == "already_attached":
+                ui.toast(self, "Сотрудник %s уже был привязан к вам" % name, "warn")
+            else:
+                ui.toast(self, "Сотрудник %s привязан: история и устройства на месте" % name)
+            mr = self.manager_root
+            if mr is not None and mr.winfo_exists():
+                mr.refresh_list()
+        else:
+            ui.toast(self, "Ошибка привязки: %s" % result.get("error"), "err")
 
     def _on_restore_result(self, result, name):
         dlg = self._restore_dialog

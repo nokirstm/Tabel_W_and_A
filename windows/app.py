@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Табель — учёт рабочего времени и выплат. Windows (Tkinter). ВЕРСИЯ 2.0.3-roles."""
+"""Табель — учёт рабочего времени и выплат. Windows (Tkinter). ВЕРСИЯ 2.0.4-roles."""
 import os
 import sys
 import json
@@ -33,6 +33,13 @@ SYNC_API_TOKEN = "28096b2395454f05a7ce7a2b0fcfe3b2e58fd9bed8d5465db4560056a66265
 APPROVED_COLOR = "#249d07"
 POLL_MS = 30000
 QUEUE_MS = 100
+
+WEEK_COLS = ("wd", "date", "time", "hours", "xtime", "xhours", "works",
+             "pay", "xpay", "bonus", "pen", "total", "appr")
+WEEK_TITLES = ("День", "Дата", "Время работы", "Кол-во часов", "Доп. время",
+               "Доп. часы", "Объём и качество работ", "Оплата за день",
+               "Доп. работы", "Премия", "Штраф", "Итого", "Одобрено")
+WEEK_WIDTHS = (46, 74, 118, 96, 108, 84, 280, 112, 100, 84, 90, 110, 76)
 
 
 def _asset(name):
@@ -109,6 +116,17 @@ def _f(text, default=0.0):
 def _num(v):
     v = float(v or 0)
     return str(int(v)) if abs(v - int(v)) < 1e-9 else ("%.2f" % v)
+
+
+def _day_entry_from_dict(data):
+    known = set(DayEntry.__dataclass_fields__.keys())
+    clean = {k: v for k, v in data.items() if k in known}
+    for k in ("lunch_on", "extra_on", "extra_use_fixed", "penalty_on"):
+        clean.setdefault(k, False)
+    clean.setdefault("approved_at", "")
+    clean.setdefault("version", 1)
+    clean.setdefault("sync_status", "synced")
+    return DayEntry(**clean)
 
 
 # ------------------------------------------------------------------ диалоги
@@ -359,6 +377,7 @@ class App(tk.Tk):
         self._locked = False
         self._reg_dialog = None
         self._restore_dialog = None
+        self._employee_view = None
         self._sync_last_error = ""
         self._after_poll = None
         self._after_queue = None
@@ -463,6 +482,14 @@ class App(tk.Tk):
                         mr = self.manager_root
                         if mr is not None and mr.winfo_exists():
                             mr.apply_list(rest[0])
+                    elif kind == "emp_state":
+                        ev = self._employee_view
+                        if ev is not None and ev.winfo_exists():
+                            ev.apply_state(rest[0])
+                    elif kind == "approve_emp":
+                        ev = self._employee_view
+                        if ev is not None and ev.winfo_exists():
+                            ev.on_approve_result(rest[0], rest[1] if len(rest) > 1 else "")
                 except Exception as ex:
                     self._sync_last_error = str(ex)
                     self._log_sync("error", "сбой обработки %s: %s" % (kind, ex))
@@ -525,7 +552,11 @@ class App(tk.Tk):
             self.refresh_history()
             ui.toast(self, "Получены обновления с телефона")
         if manager_news:
-            ui.toast(self, "Обновления по сотрудникам: %d" % manager_news)
+            ev = self._employee_view
+            if ev is not None and ev.winfo_exists():
+                ev.request_state()
+            else:
+                ui.toast(self, "Обновления по сотрудникам: %d" % manager_news)
         self._update_sync_panel()
 
     def _apply_day_updated(self, payload):
@@ -853,6 +884,10 @@ class App(tk.Tk):
         mr = getattr(self, "manager_root", None)
         if mr is not None:
             mr.destroy()
+        ev = getattr(self, "_employee_view", None)
+        if ev is not None:
+            ev.destroy()
+            self._employee_view = None
         self.manager_root = ManagerRoot(self)
         self.manager_root.pack(fill="both", expand=True, padx=14, pady=(10, 12))
 
@@ -861,6 +896,10 @@ class App(tk.Tk):
         if mr is not None:
             mr.destroy()
             self.manager_root = None
+        ev = getattr(self, "_employee_view", None)
+        if ev is not None:
+            ev.destroy()
+            self._employee_view = None
         nb = getattr(self, "nb", None)
         if nb is not None:
             nb.destroy()
@@ -879,6 +918,25 @@ class App(tk.Tk):
         self._build_week_tab()
         self._build_hist_tab()
         self._build_settings_tab()
+
+    # ------------------------------------------------- переход к сотруднику
+    def show_employee_view(self, emp):
+        ev = getattr(self, "_employee_view", None)
+        if ev is not None:
+            ev.destroy()
+        self._employee_view = EmployeeView(self, emp)
+        if self.manager_root is not None:
+            self.manager_root.pack_forget()
+        self._employee_view.pack(fill="both", expand=True, padx=14, pady=(0, 12))
+
+    def close_employee_view(self):
+        ev = getattr(self, "_employee_view", None)
+        if ev is not None:
+            ev.destroy()
+            self._employee_view = None
+        if self.manager_root is not None and not self.manager_root.winfo_ismapped():
+            self.manager_root.pack(fill="both", expand=True, padx=14, pady=(10, 12))
+            self.manager_root.refresh_list()
 
     # ------------------------------------------------------------- вкладка ДЕНЬ
     def _build_day_tab(self):
@@ -1088,17 +1146,12 @@ class App(tk.Tk):
                    command=lambda: self.export("week", "pdf")).pack(side="right", padx=4)
         ttk.Button(bar, text="Карточка за месяц (PDF)", style="Accent.TButton",
                    command=lambda: self.export("month", "pdf")).pack(side="right", padx=4)
-        cols = ("wd", "date", "time", "hours", "xtime", "xhours", "works",
-                "pay", "xpay", "bonus", "pen", "total", "appr")
-        titles = ("День", "Дата", "Время работы", "Кол-во часов", "Доп. время",
-                  "Доп. часы", "Объём и качество работ", "Оплата за день",
-                  "Доп. работы", "Премия", "Штраф", "Итого", "Одобрено")
-        widths = (46, 74, 118, 96, 108, 84, 280, 112, 100, 84, 90, 110, 76)
         wrap = tk.Frame(root, bg=T["surface"], highlightbackground=T["border"],
                         highlightthickness=1)
         wrap.grid(row=1, column=0, sticky="nsew")
-        self.tree = ttk.Treeview(wrap, columns=cols, show="headings", selectmode="browse")
-        for c, t, w in zip(cols, titles, widths):
+        self.tree = ttk.Treeview(wrap, columns=WEEK_COLS, show="headings",
+                                 selectmode="browse")
+        for c, t, w in zip(WEEK_COLS, WEEK_TITLES, WEEK_WIDTHS):
             self.tree.heading(c, text=t)
             self.tree.column(c, width=w, anchor="center" if c != "works" else "w",
                              stretch=(c == "works"))
@@ -1106,14 +1159,7 @@ class App(tk.Tk):
         self.tree.configure(yscrollcommand=vs.set)
         self.tree.pack(side="left", fill="both", expand=True)
         vs.pack(side="right", fill="y")
-        self.tree.tag_configure("odd", background="#F7FAFD")
-        self.tree.tag_configure("weekend", background="#EDF3F9", foreground=T["text_muted"])
-        self.tree.tag_configure("today", background=T["accent_light"], font=F_BODY_B)
-        self.tree.tag_configure("total", background="#D6E6F4", font=(FONT, 12, "bold"))
-        self.tree.tag_configure("total_paid", background="#D6E6F4",
-                                foreground=APPROVED_COLOR, font=(FONT, 14, "bold"))
-        self.tree.tag_configure("appr_yes", foreground=APPROVED_COLOR,
-                                font=(FONT, 20, "bold"))
+        self._configure_week_tags(self.tree)
         self.tree.bind("<Double-1>", self._tree_open_day)
         foot = tk.Frame(root, bg=T["bg"])
         foot.grid(row=2, column=0, sticky="ew", pady=(10, 0))
@@ -1143,6 +1189,17 @@ class App(tk.Tk):
         self.btn_received = ttk.Button(inner, text="Получил", style="Accent.TButton",
                                        command=self.mark_received)
         self.btn_received.pack(side="left", padx=(10, 0))
+
+    @staticmethod
+    def _configure_week_tags(tree):
+        tree.tag_configure("odd", background="#F7FAFD")
+        tree.tag_configure("weekend", background="#EDF3F9", foreground=T["text_muted"])
+        tree.tag_configure("today", background=T["accent_light"], font=F_BODY_B)
+        tree.tag_configure("total", background="#D6E6F4", font=(FONT, 12, "bold"))
+        tree.tag_configure("total_paid", background="#D6E6F4",
+                           foreground=APPROVED_COLOR, font=(FONT, 14, "bold"))
+        tree.tag_configure("appr_yes", foreground=APPROVED_COLOR,
+                           font=(FONT, 20, "bold"))
 
     # --------------------------------------------------------- вкладка ИСТОРИЯ
     def _build_hist_tab(self):
@@ -1773,15 +1830,10 @@ class ManagerRoot(tk.Frame):
                             bg=T["surface"], fg=T["accent_dark"], font=ui.F_GIANT,
                             relief="flat", bd=0, cursor="hand2", anchor="w",
                             padx=24, pady=18,
-                            command=lambda e=emp: self._open_employee(e))
+                            command=lambda e=emp: self.app.show_employee_view(e))
             btn.pack(fill="x", pady=6)
             btn.bind("<Enter>", lambda ev: ev.widget.config(bg=T["accent_light"]))
             btn.bind("<Leave>", lambda ev: ev.widget.config(bg=T["surface"]))
-
-    def _open_employee(self, emp):
-        ui.toast(self.app, "Просмотр и одобрение дней сотрудника включаются следующим "
-                           "шагом: серверная выборка данных сотрудника "
-                           "(команда fetch_employee_state).", "warn")
 
     def _show_message(self, text):
         tk.Label(self.list_frame, text=text, bg=T["bg"], fg=T["text_muted"],
@@ -1789,6 +1841,429 @@ class ManagerRoot(tk.Frame):
 
     def open_add_emp(self):
         CreateEmployeeDialog(self.app)
+
+
+class EmployeeView(tk.Frame):
+    """Контекст сотрудника у руководителя: неделя с одобрением, история, карточка.
+    Данные живут в памяти (self.state) и приходят с сервера командой
+    fetch_employee_state; одобрение уходит командой approve_employee_day."""
+
+    def __init__(self, app, employee):
+        super().__init__(app, bg=T["bg"])
+        self.app = app
+        self.emp = employee
+        self.current = dt.date.today()
+        self.state = {}      # date -> {"entry": DayEntry, "version": int, "approved_at": str}
+        self.payments = {}   # week_id(ISO monday) -> {"payment_date": iso, "confirmed": bool}
+        self._meta = {}
+        top = tk.Frame(self, bg=T["bg"])
+        top.pack(fill="x", pady=(0, 10))
+        ttk.Button(top, text="← К списку сотрудников", style="Ghost.TButton",
+                   command=self.close).pack(side="left")
+        tk.Label(top, text=str(employee.get("name", "")).upper(),
+                 bg=T["bg"], fg=T["accent_dark"], font=ui.F_GIANT).pack(side="left",
+                                                                       padx=18)
+        ttk.Button(top, text="Обновить с сервера", style="Ghost.TButton",
+                   command=self.request_state).pack(side="right")
+        self.nb = ttk.Notebook(self)
+        self.nb.pack(fill="both", expand=True)
+        self.tab_week = tk.Frame(self.nb, bg=T["bg"])
+        self.tab_hist = tk.Frame(self.nb, bg=T["bg"])
+        self.tab_set = tk.Frame(self.nb, bg=T["bg"])
+        self.nb.add(self.tab_week, text="Неделя")
+        self.nb.add(self.tab_hist, text="История")
+        self.nb.add(self.tab_set, text="Настройки")
+        self.nb.bind("<<NotebookTabChanged>>", self._on_tab)
+        self._build_week_tab()
+        self._build_hist_tab()
+        self._build_set_tab()
+        self.request_state()
+
+    def close(self):
+        self.app.close_employee_view()
+
+    # ---------------------------------------------------------------- загрузка
+    def request_state(self):
+        mgr_id = self.app.db.get("manager_id", "")
+        mgr_tok = self.app.db.get("manager_token", "")
+        if not (mgr_id and mgr_tok):
+            return
+        self.app.sync_client.send_async(
+            "fetch_employee_state", mgr_id, mgr_tok, self.emp["employee_id"],
+            callback=lambda r: self.app.sync_queue.put(("emp_state", r)))
+
+    def apply_state(self, result):
+        if not result.get("ok"):
+            ui.toast(self.app, "Ошибка загрузки данных сотрудника: %s"
+                     % result.get("error"), "err")
+            return
+        self._meta = result
+        self.state = {}
+        for item in result.get("timesheet_state", []) or []:
+            date = str(item.get("date") or "").strip()
+            payload = item.get("payload") or {}
+            entry_data = payload.get("entry") or {}
+            if not date or not isinstance(entry_data, dict) or not entry_data:
+                continue
+            try:
+                version = int(item.get("version") or 1)
+            except (TypeError, ValueError):
+                version = 1
+            data = dict(entry_data)
+            data.pop("id", None)
+            data["date"] = date
+            data.setdefault("rate", 250.0)
+            data.setdefault("extra_rate", 250.0)
+            try:
+                entry = _day_entry_from_dict(data)
+            except TypeError:
+                continue
+            self.state[date] = {
+                "entry": entry,
+                "version": version,
+                "approved_at": str(payload.get("approved_at") or ""),
+            }
+        self.payments = {}
+        for item in result.get("payment_state", []) or []:
+            week_id = str(item.get("week_id") or "").strip()
+            if not week_id:
+                continue
+            self.payments[week_id] = {
+                "payment_date": str(item.get("payment_date") or ""),
+                "confirmed": bool(item.get("payment_confirmed")),
+            }
+        self.refresh_week()
+        self.refresh_hist()
+        self.refresh_set()
+
+    # ------------------------------------------------------------------ неделя
+    def _build_week_tab(self):
+        root = self.tab_week
+        root.rowconfigure(1, weight=1)
+        root.columnconfigure(0, weight=1)
+        bar = tk.Frame(root, bg=T["surface"], highlightbackground=T["border"],
+                       highlightthickness=1)
+        bar.grid(row=0, column=0, sticky="ew", pady=(6, 10))
+        ttk.Button(bar, text="◀", style="Nav.TButton",
+                   command=lambda: self.shift_week(-1)).pack(side="left", padx=(10, 6), pady=8)
+        self.lbl_week = tk.Label(bar, bg=T["surface"], fg=T["accent_dark"],
+                                 font=(FONT, 14, "bold"))
+        self.lbl_week.pack(side="left", padx=8)
+        ttk.Button(bar, text="▶", style="Nav.TButton",
+                   command=lambda: self.shift_week(1)).pack(side="left", padx=6)
+        ttk.Button(bar, text="Текущая неделя", style="Ghost.TButton",
+                   command=self.goto_today).pack(side="left")
+        tk.Label(bar, text="Клик по квадрату в колонке «Одобрено» = одобрить день",
+                 bg=T["surface"], fg=T["text_muted"], font=F_SMALL).pack(side="right",
+                                                                        padx=14)
+        wrap = tk.Frame(root, bg=T["surface"], highlightbackground=T["border"],
+                        highlightthickness=1)
+        wrap.grid(row=1, column=0, sticky="nsew")
+        self.tree = ttk.Treeview(wrap, columns=WEEK_COLS, show="headings",
+                                 selectmode="browse")
+        for c, t, w in zip(WEEK_COLS, WEEK_TITLES, WEEK_WIDTHS):
+            self.tree.heading(c, text=t)
+            self.tree.column(c, width=w, anchor="center" if c != "works" else "w",
+                             stretch=(c == "works"))
+        vs = ttk.Scrollbar(wrap, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vs.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        vs.pack(side="right", fill="y")
+        App._configure_week_tags(self.tree)
+        self.tree.bind("<ButtonRelease-1>", self._on_tree_click)
+        paybar = tk.Frame(root, bg=T["surface"], highlightbackground=T["border"],
+                          highlightthickness=1)
+        paybar.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        self.lbl_week_pay = tk.Label(paybar, text="", bg=T["surface"], fg=T["text"],
+                                     font=F_BODY_B, anchor="w", padx=12, pady=10)
+        self.lbl_week_pay.pack(fill="x")
+
+    def shift_week(self, n):
+        self.current += dt.timedelta(weeks=n)
+        self.refresh_week()
+
+    def goto_today(self):
+        self.current = dt.date.today()
+        self.refresh_week()
+
+    def _week_entries(self):
+        a, b = week_range(self.current)
+        out, cur = [], a
+        while cur <= b:
+            rec = self.state.get(cur.isoformat())
+            out.append(rec["entry"] if rec else DayEntry(date=cur.isoformat()))
+            cur += dt.timedelta(days=1)
+        return out
+
+    def refresh_week(self):
+        self.lbl_week.config(text=week_title(self.current))
+        self.tree.delete(*self.tree.get_children())
+        days = self._week_entries()
+        for i, e in enumerate(days):
+            d = e.date_obj
+            rec = self.state.get(e.date)
+            tags = []
+            if d.weekday() >= 5:
+                tags.append("weekend")
+            elif i % 2:
+                tags.append("odd")
+            if rec and rec["approved_at"]:
+                tags.append("appr_yes")
+            time_s = ("%s — %s" % (fmt_time(e.start), fmt_time(e.end))
+                      if e.start is not None and e.end is not None else "—")
+            if e.lunch_on and e.lunch_min:
+                time_s += "  (−%dм)" % e.lunch_min
+            xt = ("%s — %s" % (fmt_time(e.extra_start), fmt_time(e.extra_end))
+                  if e.extra_on and e.extra_start is not None and e.extra_end is not None
+                  else ("сумма" if e.extra_on and e.extra_use_fixed else "—"))
+            appr = "✓" if (rec and rec["approved_at"]) else ("■" if not e.is_empty else "")
+            self.tree.insert("", "end", iid="d:" + e.date, tags=tags, values=(
+                ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][d.weekday()],
+                "%02d.%02d" % (d.day, d.month),
+                time_s,
+                fmt_hm_short(e.work_min) if e.work_min else "—",
+                xt,
+                fmt_hm_short(e.extra_min) if e.extra_min else "—",
+                (e.works.replace("\n", " ")[:120] or "—"),
+                fmt_money(e.day_pay) if e.day_pay else "—",
+                fmt_money(e.extra_pay) if e.extra_pay else "—",
+                fmt_money(e.bonus) if e.bonus else "—",
+                fmt_money(e.penalty) if e.penalty else "—",
+                fmt_money(e.total_pay) if e.total_pay else "—",
+                appr,
+            ))
+        t = Totals(days)
+        pay = self.payments.get(week_start(self.current).isoformat())
+        closed = bool(pay and pay["confirmed"])
+        self.tree.insert("", "end", iid="total",
+                         tags=("total_paid",) if closed else ("total",), values=(
+            "", "ИТОГО", "", fmt_hm_short(t.work_min), "", fmt_hm_short(t.extra_min),
+            "Отработано дней: %d   •   всего %s" % (t.worked_days, fmt_hm(t.total_min)),
+            fmt_money(t.day_pay), fmt_money(t.extra_pay), fmt_money(t.bonus),
+            fmt_money(t.penalty), fmt_money(t.total_pay), ""))
+        filled = [e for e in days if not e.is_empty]
+        appr_n = sum(1 for e in filled
+                     if (self.state.get(e.date) or {}).get("approved_at"))
+        rec_date = _fmt_date_ru(pay["payment_date"]) if pay else ""
+        sig = "✓" if closed else "—"
+        self.lbl_week_pay.config(
+            text="Одобрено дней: %d из %d   •   Дата получения: %s   •   Подпись: %s%s"
+                 % (appr_n, len(filled), rec_date or "—", sig,
+                    "   •   неделя неизменяема" if closed else ""),
+            fg=APPROVED_COLOR if closed else T["text"])
+
+    def _on_tree_click(self, event):
+        if self.tree.identify("region", event.x, event.y) != "cell":
+            return
+        if self.tree.identify_column(event.x) != "#13":
+            return
+        iid = self.tree.identify_row(event.y)
+        if not iid or not iid.startswith("d:"):
+            return
+        date = iid[2:]
+        rec = self.state.get(date)
+        if not rec or rec["entry"].is_empty:
+            return
+        if rec["approved_at"]:
+            ui.toast(self.app, "День уже одобрен", "warn")
+            return
+        mgr_id = self.app.db.get("manager_id", "")
+        mgr_tok = self.app.db.get("manager_token", "")
+        if not (mgr_id and mgr_tok):
+            ui.toast(self.app, "Нет данных руководителя", "err")
+            return
+        self.app.sync_client.send_async(
+            "approve_employee_day", mgr_id, mgr_tok,
+            self.emp["employee_id"], date, rec["version"],
+            callback=lambda r, d=date: self.app.sync_queue.put(("approve_emp", r, d)))
+
+    def on_approve_result(self, result, date):
+        if result.get("ok") and result.get("status") == "synced":
+            rec = self.state.get(date)
+            if rec:
+                rec["approved_at"] = dt.datetime.now().isoformat()
+            ui.toast(self.app, "День одобрен ✓ — команда ушла на устройство сотрудника")
+            self.refresh_week()
+        elif result.get("ok") and result.get("status") == "conflict":
+            ui.toast(self.app, "Сервер отклонил одобрение: запись новее. "
+                               "Обновляю данные с сервера…", "warn")
+            self.request_state()
+        else:
+            ui.toast(self.app, "Ошибка одобрения: %s" % result.get("error"), "err")
+
+    # ----------------------------------------------------------------- история
+    def _build_hist_tab(self):
+        root = self.tab_hist
+        root.rowconfigure(0, weight=1)
+        root.columnconfigure(1, weight=1)
+        side = Card(root, "Месяцы")
+        side.grid(row=0, column=0, sticky="nsw", pady=6, padx=(0, 10))
+        self.lst_months = tk.Listbox(side.body, width=22, font=F_BODY, bd=0,
+                                     bg=T["white"], fg=T["text"], relief="flat",
+                                     highlightthickness=1,
+                                     highlightbackground=T["border"],
+                                     selectbackground=T["accent"],
+                                     selectforeground="white", activestyle="none")
+        self.lst_months.pack(fill="both", expand=True, ipady=4)
+        self.lst_months.bind("<<ListboxSelect>>", self._hist_pick)
+        right = tk.Frame(root, bg=T["bg"])
+        right.grid(row=0, column=1, sticky="nsew", pady=6)
+        right.rowconfigure(0, weight=3)
+        right.rowconfigure(1, weight=2)
+        right.columnconfigure(0, weight=1)
+        main = Card(right, "Записи месяца")
+        main.grid(row=0, column=0, sticky="nsew")
+        cols = ("date", "wd", "time", "hours", "works", "total")
+        titles = ("Дата", "День", "Время", "Часы", "Работы", "Итого, ₽")
+        widths = (92, 50, 120, 80, 420, 110)
+        self.htree = ttk.Treeview(main.body, columns=cols, show="headings")
+        for c, t, w in zip(cols, titles, widths):
+            self.htree.heading(c, text=t)
+            self.htree.column(c, width=w, anchor="center" if c != "works" else "w",
+                              stretch=(c == "works"))
+        vs = tk.Scrollbar(main.body, orient="vertical", command=self.htree.yview)
+        self.htree.configure(yscrollcommand=vs.set)
+        self.htree.pack(side="left", fill="both", expand=True)
+        vs.pack(side="right", fill="y")
+        self.htree.tag_configure("odd", background="#F7FAFD")
+        self.htree.tag_configure("wtotal", background="#E3EDF7", font=F_BODY_B)
+        self.htree.tag_configure("mtotal", background="#C9DFF2", font=(FONT, 11, "bold"))
+        payc = Card(right, "Выплаты зарплаты (обобщённо)")
+        payc.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        pcols = ("week", "pdate", "sig", "sum")
+        ptitles = ("Неделя", "Дата получения", "Подпись", "Сумма, ₽")
+        pwidths = (220, 140, 90, 140)
+        self.ptree = ttk.Treeview(payc.body, columns=pcols, show="headings", height=5)
+        for c, t, w in zip(pcols, ptitles, pwidths):
+            self.ptree.heading(c, text=t)
+            self.ptree.column(c, width=w, anchor="center")
+        self.ptree.pack(fill="both", expand=True)
+        self.ptree.tag_configure("paid", foreground=APPROVED_COLOR, font=F_BODY_B)
+
+    def _hist_pick(self, _e):
+        sel = self.lst_months.curselection()
+        if not sel:
+            return
+        y, m = self._months[sel[0]].split("-")
+        self._fill_history(dt.date(int(y), int(m), 1))
+
+    def refresh_hist(self):
+        months = sorted({d[:7] for d in self.state.keys()}, reverse=True)
+        cur = self.current.strftime("%Y-%m")
+        if cur not in months:
+            months = [cur] + months
+        self.lst_months.delete(0, "end")
+        self._months = months
+        for m in months:
+            y, mm = m.split("-")
+            self.lst_months.insert("end", "  %s %s" % (MONTHS_RU[int(mm) - 1], y))
+        if cur in months:
+            i = months.index(cur)
+            self.lst_months.selection_clear(0, "end")
+            self.lst_months.selection_set(i)
+        self._fill_history(self.current)
+        self.ptree.delete(*self.ptree.get_children())
+        for week_id in sorted(self.payments.keys(), reverse=True):
+            pay = self.payments[week_id]
+            try:
+                monday = dt.date.fromisoformat(week_id)
+            except ValueError:
+                continue
+            t = Totals([self.state[d]["entry"] for d in self.state
+                        if week_start(self.state[d]["entry"].date_obj).isoformat() == week_id])
+            self.ptree.insert("", "end", tags=("paid",) if pay["confirmed"] else (),
+                              values=(week_title(monday),
+                                      _fmt_date_ru(pay["payment_date"]) or "—",
+                                      "✓" if pay["confirmed"] else "—",
+                                      fmt_money(t.total_pay)))
+
+    def _fill_history(self, anchor):
+        self.htree.delete(*self.htree.get_children())
+        a, b = month_range(anchor)
+        days = [self.state[d]["entry"] for d in sorted(self.state.keys())
+                if a.isoformat() <= d <= b.isoformat()]
+        wk_buf, i = [], 0
+        for e in days:
+            d = e.date_obj
+            if not e.is_empty:
+                rec = self.state.get(e.date) or {}
+                self.htree.insert("", "end", tags=("odd",) if i % 2 else (), values=(
+                    "%02d.%02d.%d" % (d.day, d.month, d.year),
+                    ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][d.weekday()],
+                    "%s — %s" % (fmt_time(e.start), fmt_time(e.end))
+                    if e.start is not None and e.end is not None else "—",
+                    fmt_hm_short(e.work_min),
+                    (e.works.replace("\n", " ")[:150] or "—") +
+                    ("  ✓" if rec.get("approved_at") else ""),
+                    fmt_money(e.total_pay)))
+                i += 1
+            wk_buf.append(e)
+            if d.weekday() == 6 or d == b:
+                t = Totals(wk_buf)
+                if t.worked_days:
+                    self.htree.insert("", "end", tags=("wtotal",), values=(
+                        "", "", "Итого за неделю", fmt_hm_short(t.work_min),
+                        "дней: %d" % t.worked_days, fmt_money(t.total_pay)))
+                wk_buf = []
+        mt = Totals(days)
+        self.htree.insert("", "end", tags=("mtotal",), values=(
+            "", "", "ИТОГО ЗА %s" % month_title(anchor).upper(),
+            fmt_hm_short(mt.work_min),
+            "оплата %s + доп %s + премия %s − штраф %s"
+            % (fmt_money(mt.day_pay), fmt_money(mt.extra_pay),
+               fmt_money(mt.bonus), fmt_money(mt.penalty)),
+            fmt_money(mt.total_pay)))
+
+    # ---------------------------------------------------------------- карточка
+    def _build_set_tab(self):
+        root = self.tab_set
+        root.columnconfigure(0, weight=1)
+        c = Card(root, "Данные сотрудника (с сервера, только чтение)")
+        c.grid(row=0, column=0, sticky="new", pady=6)
+        self.set_labels = {}
+        for key, label in (("name", "Ф. И. О."),
+                           ("birth", "Дата рождения"),
+                           ("eid", "ID сотрудника"),
+                           ("dev", "Устройства"),
+                           ("rate", "Ставка из последних записей")):
+            r = tk.Frame(c.body, bg=T["surface"])
+            r.pack(fill="x", pady=4)
+            tk.Label(r, text=label + ":", bg=T["surface"], fg=T["text_muted"],
+                     font=F_BODY, width=30, anchor="w").pack(side="left")
+            v = tk.Label(r, text="—", bg=T["surface"], fg=T["text"],
+                         font=F_BODY_B, anchor="w")
+            v.pack(side="left", padx=(10, 0))
+            self.set_labels[key] = v
+        tk.Label(c.body,
+                 text="Ставки и значения по умолчанию редактирует сам сотрудник "
+                      "на своём устройстве. Здесь они отображаются для контроля.",
+                 bg=T["surface"], fg=T["text_muted"], font=F_SMALL,
+                 wraplength=720, justify="left").pack(anchor="w", pady=(12, 0))
+
+    def refresh_set(self):
+        meta = self._meta or {}
+        self.set_labels["name"].config(
+            text=str(meta.get("name") or self.emp.get("name") or ""))
+        self.set_labels["birth"].config(text=_fmt_date_ru(meta.get("birth_date")) or "—")
+        self.set_labels["eid"].config(text=str(self.emp.get("employee_id", "")))
+        win_d = "привязан" if meta.get("win_device_id") else "не привязан"
+        and_d = "привязан" if meta.get("android_device_id") else "не привязан"
+        self.set_labels["dev"].config(text="Компьютер: %s   •   Телефон: %s"
+                                      % (win_d, and_d))
+        rates = [rec["entry"].rate for rec in self.state.values()
+                 if rec["entry"].rate]
+        self.set_labels["rate"].config(
+            text=(fmt_money(rates[-1]) + " / час") if rates else "—")
+
+    def _on_tab(self, _e):
+        try:
+            tab = self.nb.index(self.nb.select())
+        except Exception:
+            return
+        if tab == 0:
+            self.refresh_week()
+        elif tab == 1:
+            self.refresh_hist()
 
 
 if __name__ == "__main__":

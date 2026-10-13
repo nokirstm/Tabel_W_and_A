@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Табель — учёт рабочего времени и выплат. Windows (Tkinter). ВЕРСИЯ 2.0.5-weekgrid."""
+"""Табель — учёт рабочего времени и выплат. Windows (Tkinter). ВЕРСИЯ 2.0.6-stretch."""
 import os
 import sys
 import json
@@ -160,7 +160,7 @@ def _week_values(e):
 
 class WeekTable(tk.Frame):
     """Таблица недели на Label+Canvas: перенос слов в заголовке и в работах,
-    покраска отдельных ячеек (галочка), единый кегль 14."""
+    покраска отдельных ячеек (галочка), единый кегль 14, растягивание на всю ширину."""
 
     def __init__(self, master, on_approve=None, on_open_day=None):
         super().__init__(master, bg=T["surface"],
@@ -179,12 +179,18 @@ class WeekTable(tk.Frame):
         self.canvas.grid(row=0, column=0, sticky="nsew")
         self.vsb.grid(row=0, column=1, sticky="ns")
         self.inner = tk.Frame(self.canvas, bg=T["white"])
-        self.canvas.create_window((0, 0), window=self.inner, anchor="nw",
-                                  width=sum(WEEK_WIDTHS))
+        self._win = self.canvas.create_window((0, 0), window=self.inner, anchor="nw",
+                                              width=sum(WEEK_WIDTHS))
         self.inner.bind("<Configure>",
                         lambda e: self.canvas.configure(
                             scrollregion=self.canvas.bbox("all")))
         self.canvas.bind("<MouseWheel>", self._wheel)
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+        self._base_total = sum(WEEK_WIDTHS)
+        self._works_idx = WEEK_COLS.index("works")
+        self._rows = []
+        self._head_works = None
+        self._layout_width = 0
         for i, (c, t, w) in enumerate(zip(WEEK_COLS, WEEK_TITLES, WEEK_WIDTHS)):
             lab = tk.Label(self.head, text=t, bg=T["accent_light"],
                            fg=COL_COLORS.get(c, T["accent_dark"]),
@@ -193,11 +199,30 @@ class WeekTable(tk.Frame):
             lab.grid(row=0, column=i, sticky="nsew")
             self.head.grid_columnconfigure(i, minsize=w, weight=0)
             lab.bind("<MouseWheel>", self._wheel)
+            if c == "works":
+                self._head_works = lab
 
     def _wheel(self, event):
         self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
+    def _on_canvas_configure(self, event):
+        """Растягивает таблицу до ширины холста: излишек уходит колонке работ."""
+        width = max(event.width, self._base_total)
+        if width == self._layout_width:
+            return
+        self._layout_width = width
+        self.canvas.itemconfig(self._win, width=width)
+        extra = width - self._base_total
+        new_w = WEEK_WIDTHS[self._works_idx] + extra
+        self.head.grid_columnconfigure(self._works_idx, minsize=new_w)
+        if self._head_works is not None:
+            self._head_works.config(wraplength=new_w - 6)
+        for row, lab in self._rows:
+            row.grid_columnconfigure(self._works_idx, minsize=new_w - 4)
+            lab.config(wraplength=new_w - 8)
+
     def clear(self):
+        self._rows = []
         for w in self.inner.winfo_children():
             w.destroy()
 
@@ -207,6 +232,7 @@ class WeekTable(tk.Frame):
         row.pack(fill="x")
         base_font = WEEK_BOLD if is_total else F_BODY
         appr_idx = WEEK_COLS.index("appr")
+        works_lab = None
         for i, (c, w) in enumerate(zip(WEEK_COLS, WEEK_WIDTHS)):
             cell_fg, cell_font = fg, base_font
             if c == "appr":
@@ -222,9 +248,17 @@ class WeekTable(tk.Frame):
             lab.grid(row=0, column=i, sticky="ew" if c == "works" else "ns", padx=2)
             row.grid_columnconfigure(i, minsize=w - 4, weight=0)
             lab.bind("<MouseWheel>", self._wheel)
+            if c == "works":
+                works_lab = lab
             if self.on_open_day and date_iso and not is_total:
                 lab.bind("<Double-1>", lambda e, d=date_iso: self.on_open_day(d))
         row.bind("<MouseWheel>", self._wheel)
+        if works_lab is not None:
+            self._rows.append((row, works_lab))
+            if self._layout_width > self._base_total:
+                new_w = WEEK_WIDTHS[self._works_idx] + (self._layout_width - self._base_total)
+                row.grid_columnconfigure(self._works_idx, minsize=new_w - 4)
+                works_lab.config(wraplength=new_w - 8)
         if clickable_approve and approved is False and self.on_approve:
             cell = row.grid_slaves(row=0, column=appr_idx)[0]
             cell.config(cursor="hand2")
@@ -2311,6 +2345,8 @@ class EmployeeView(tk.Frame):
                    command=self.save_employee_copy).pack(side="left", padx=(8, 0))
         ttk.Button(row2, text="Обновить данные с сервера", style="Ghost.TButton",
                    command=self.request_state).pack(side="left", padx=(8, 0))
+        ttk.Button(row2, text="Открыть папку с данными", style="Ghost.TButton",
+                   command=self.open_data_folder).pack(side="left", padx=(8, 0))
 
     def _state_days_range(self, a, b):
         return [self.state[d]["entry"] for d in sorted(self.state.keys())
@@ -2368,6 +2404,13 @@ class EmployeeView(tk.Frame):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         ui.toast(self.app, "Копия сотрудника сохранена")
+
+    def open_data_folder(self):
+        folder = os.path.dirname(self.app.db.path)
+        try:
+            os.startfile(folder)
+        except AttributeError:
+            os.system('xdg-open "%s"' % folder)
 
     def refresh_set(self):
         meta = self._meta or {}

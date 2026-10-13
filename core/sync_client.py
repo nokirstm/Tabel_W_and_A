@@ -75,6 +75,8 @@ class SyncClient:
                     res = self._make_request("approve_employee_day", {"manager_id": args[0], "manager_token": args[1], "employee_id": args[2], "date": args[3], "version": args[4]})
                 elif method_name == "unlink_windows":
                     res = self._make_request("unlink_windows", {"employee_id": args[0], "employee_token": args[1]})
+                elif method_name == "fetch_employee_state":
+                    res = self._make_request("fetch_employee_state", {"manager_id": args[0], "manager_token": args[1], "employee_id": args[2]})
                 elif method_name == "payment_date_entered":
                     res = self._make_request("payment_date_entered", {"week_id": args[2], "payment_date": args[3], "version": args[4]}, args[0], args[1])
                 elif method_name == "payment_received":

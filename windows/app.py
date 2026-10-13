@@ -912,6 +912,13 @@ class App(tk.Tk):
             local = self.db.load_day(date)
             local_version = 0 if local.is_empty else int(local.version or 1)
             if local_version >= version:
+                # Версии равны, но на сервере день одобрен, а локально нет:
+                # лечим команды day_approved, которые старая сборка забрала
+                # из очереди и проигнорировала (approved_at хранится в state).
+                srv_approved = str(payload.get("approved_at") or "")
+                if srv_approved and not local.is_empty and not local.approved_at:
+                    self.db.mark_approved(date, srv_approved)
+                    days_imported += 1
                 continue
             data = dict(entry_data)
             data.pop("id", None)

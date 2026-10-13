@@ -126,6 +126,34 @@ class StatTile(tk.Frame):
         self.value.pack(pady=(0, 10), padx=16)
     def set(self, text): self.value.config(text=text)
 
+class ScrollFrame(tk.Frame):
+    """Вертикально прокручиваемый контейнер: содержимое строить в .inner."""
+
+    def __init__(self, master, bg=None):
+        bg = bg or T["bg"]
+        super().__init__(master, bg=bg)
+        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0)
+        self.vsb = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.inner = tk.Frame(self.canvas, bg=bg)
+        self.inner.bind("<Configure>",
+                        lambda e: self.canvas.configure(
+                            scrollregion=self.canvas.bbox("all")))
+        self.canvas.configure(yscrollcommand=self.vsb.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.vsb.pack(side="right", fill="y")
+        self._win = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self.canvas.bind("<Configure>", self._on_canvas)
+        for w in (self.canvas, self.inner):
+            w.bind("<Enter>", lambda e: self.canvas.bind_all("<MouseWheel>", self._wheel))
+            w.bind("<Leave>", lambda e: self.canvas.unbind_all("<MouseWheel>"))
+
+    def _on_canvas(self, event):
+        self.canvas.itemconfig(self._win, width=event.width)
+
+    def _wheel(self, event):
+        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+
 def toast(root, text, kind="ok"):
     colors = {"ok": T["ok"], "warn": T["warn"], "err": T["danger"]}
     win = tk.Toplevel(root)

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Табель — учёт рабочего времени и выплат. Windows (Tkinter). ВЕРСИЯ 2.0.6-stretch."""
+"""Табель — учёт рабочего времени и выплат. Windows (Tkinter). ВЕРСИЯ 2.0.7-adaptive."""
 import os
 import sys
 import json
@@ -19,7 +19,8 @@ from timecard_core import (THEME as T, DayEntry, Storage, Totals, WEEKDAYS_RU,
                            fmt_hm_short, fmt_money, week_start, week_range,
                            week_title, month_title, month_range)
 import ui_kit as ui
-from ui_kit import Card, Field, Toggle, StatTile, FONT, F_BODY, F_BODY_B, F_SMALL
+from ui_kit import (Card, Field, Toggle, StatTile, ScrollFrame,
+                    FONT, F_BODY, F_BODY_B, F_SMALL)
 import reports
 
 try:
@@ -41,10 +42,12 @@ WEEK_TITLES = ("День", "Дата", "Время работы", "Кол-во �
                "Доп. часы", "Объём и качество работ", "Оплата за день",
                "Доп. работы", "Премия", "Штраф", "Итого", "Одобрено")
 WEEK_WIDTHS = (40, 66, 104, 74, 92, 66, 300, 92, 84, 70, 74, 96, 64)
-COL_COLORS = {"works": "#2f81f1", "xpay": "#d762de", "bonus": "#59f2ed",
+COL_COLORS = {"works": "#2f81f1", "xpay": "#d762de", "bonus": "#2f81f1",
               "pen": "#cd142e", "appr": "#249d07"}
 WEEK_BOLD = (FONT, 14, "bold")
 CHECK_FONT = (FONT, 18, "bold")
+HIST_WIDTHS = (84, 46, 110, 74, 70, 452, 110)
+HIST_WIDTHS_MGR = (84, 46, 110, 74, 452, 110)
 
 
 def _asset(name):
@@ -159,8 +162,7 @@ def _week_values(e):
 
 
 class WeekTable(tk.Frame):
-    """Таблица недели на Label+Canvas: перенос слов в заголовке и в работах,
-    покраска отдельных ячеек (галочка), единый кегль 14, растягивание на всю ширину."""
+    """Таблица недели на Label+Canvas: перенос слов, центровка, растягивание."""
 
     def __init__(self, master, on_approve=None, on_open_day=None):
         super().__init__(master, bg=T["surface"],
@@ -206,7 +208,6 @@ class WeekTable(tk.Frame):
         self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _on_canvas_configure(self, event):
-        """Растягивает таблицу до ширины холста: излишек уходит колонке работ."""
         width = max(event.width, self._base_total)
         if width == self._layout_width:
             return
@@ -240,12 +241,12 @@ class WeekTable(tk.Frame):
                     cell_fg, cell_font = APPROVED_COLOR, CHECK_FONT
                 elif approved is False:
                     cell_fg, cell_font = "#9AA7B2", (FONT, 16, "bold")
-            wrap = (w - 8) if c == "works" else 0
+            wrap = (w - 8) if c in ("works", "time", "xtime") else 0
             lab = tk.Label(row, text=values[i], bg=bg, fg=cell_fg, font=cell_font,
                            wraplength=wrap,
                            justify="left" if c == "works" else "center",
                            anchor="w" if c == "works" else "center", pady=3)
-            lab.grid(row=0, column=i, sticky="ew" if c == "works" else "ns", padx=2)
+            lab.grid(row=0, column=i, sticky="nsew", padx=2)
             row.grid_columnconfigure(i, minsize=w - 4, weight=0)
             lab.bind("<MouseWheel>", self._wheel)
             if c == "works":
@@ -513,7 +514,7 @@ class App(tk.Tk):
         super().__init__()
         self.title("Табель 2.0 — учёт рабочего времени и выплат")
         self.geometry("1180x760")
-        self.minsize(1040, 700)
+        self.minsize(1024, 640)
         self.configure(bg=T["bg"])
         try:
             self.iconbitmap(_asset("icon.ico"))
@@ -683,6 +684,14 @@ class App(tk.Tk):
                         self.sync_stats["skipped"] += 1
                     touch_current = touch_current or (
                         payload.get("date") == self.current.isoformat())
+                elif cmd == "day_approved":
+                    if self._apply_day_approved(payload):
+                        changed = True
+                        self.sync_stats["applied"] += 1
+                    else:
+                        self.sync_stats["skipped"] += 1
+                    touch_current = touch_current or (
+                        payload.get("date") == self.current.isoformat())
                 elif cmd in ("payment_date_entered", "payment_received"):
                     if self._apply_payment(payload):
                         changed = True
@@ -700,7 +709,7 @@ class App(tk.Tk):
                 self.load_date(self.current)
             self.refresh_week()
             self.refresh_history()
-            ui.toast(self, "Получены обновления с телефона")
+            ui.toast(self, "Получены обновления с сервера")
         if manager_news:
             ev = self._employee_view
             if ev is not None and ev.winfo_exists():
@@ -733,6 +742,18 @@ class App(tk.Tk):
         data.setdefault("rate", self.db.get_float("rate", 250))
         data.setdefault("extra_rate", self.db.get_float("extra_rate", 250))
         self.db.save_day(DayEntry(**data))
+        return True
+
+    def _apply_day_approved(self, payload):
+        """Входящее одобрение от руководителя: серый квадрат -> зелёная галочка."""
+        date = str(payload.get("date") or "").strip()
+        if not date:
+            return False
+        local = self.db.load_day(date)
+        if local.is_empty or local.approved_at:
+            return False
+        self.db.mark_approved(date)
+        self._log_sync("day_approved", "применено date=%s" % date)
         return True
 
     def _apply_payment(self, payload):
@@ -899,7 +920,7 @@ class App(tk.Tk):
             data["sync_status"] = "synced"
             for k in ("lunch_on", "extra_on", "extra_use_fixed", "penalty_on"):
                 data.setdefault(k, False)
-            data.setdefault("approved_at", local.approved_at or "")
+            data["approved_at"] = payload.get("approved_at") or local.approved_at or ""
             data.setdefault("rate", self.db.get_float("rate", 250))
             data.setdefault("extra_rate", self.db.get_float("extra_rate", 250))
             try:
@@ -1128,12 +1149,11 @@ class App(tk.Tk):
                    command=lambda: self.load_date(dt.date.today())).pack(side="left", padx=4)
         self.lbl_saved = tk.Label(bar, bg=T["surface"], fg=T["ok"], font=F_SMALL)
         self.lbl_saved.pack(side="right", padx=14)
-        left = tk.Frame(root, bg=T["bg"])
+        left = ScrollFrame(root)
         left.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
-        left.rowconfigure(1, weight=1)
-        left.columnconfigure(0, weight=1)
-        c_time = Card(left, "Время работы")
-        c_time.grid(row=0, column=0, sticky="ew")
+        left.inner.columnconfigure(0, weight=1)
+        c_time = Card(left.inner, "Время работы")
+        c_time.grid(row=0, column=0, sticky="new")
         b = c_time.body
         row = tk.Frame(b, bg=T["surface"])
         row.pack(fill="x")
@@ -1165,15 +1185,15 @@ class App(tk.Tk):
             ttk.Button(inner, text=m + " мин", style="Ghost.TButton",
                        command=lambda v=m: (self.f_lunch.set(v), self.recalc())
                        ).pack(side="left", padx=(10, 0), pady=(12, 0))
-        c_work = Card(left, "Объём и качество произведённых работ")
-        c_work.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        c_work = Card(left.inner, "Объём и качество произведённых работ")
+        c_work.grid(row=1, column=0, sticky="new", pady=(10, 0))
         self.txt_works = tk.Text(c_work.body, height=5, font=(FONT, 11), wrap="word",
                                  bg=T["white"], fg=T["text"], relief="flat",
                                  highlightthickness=1, highlightbackground=T["border"],
                                  highlightcolor=T["accent"], padx=8, pady=6)
         self.txt_works.pack(fill="both", expand=True)
-        c_extra = Card(left, "Дополнительные работы")
-        c_extra.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        c_extra = Card(left.inner, "Дополнительные работы")
+        c_extra.grid(row=2, column=0, sticky="new", pady=(10, 0))
         be = c_extra.body
         self.t_extra = Toggle(be, "Были дополнительные работы", command=self.toggle_extra)
         self.t_extra.pack(anchor="w")
@@ -1202,8 +1222,8 @@ class App(tk.Tk):
                                   highlightthickness=1, highlightbackground=T["border"],
                                   highlightcolor=T["accent"], padx=8, pady=4)
         self.txt_xworks.pack(fill="x")
-        c_pen = Card(left, "Штраф")
-        c_pen.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        c_pen = Card(left.inner, "Штраф")
+        c_pen.grid(row=3, column=0, sticky="new", pady=(10, 0))
         bp = c_pen.body
         self.t_penalty = Toggle(bp, "Был штраф", command=self.toggle_penalty)
         self.t_penalty.pack(anchor="w")
@@ -1212,12 +1232,11 @@ class App(tk.Tk):
         pi = tk.Frame(self.penalty_panel, bg=T["surface_alt"])
         pi.pack(fill="x", padx=12, pady=10)
         self.f_penalty = self._alt_field(pi, "Сумма штрафа, ₽", 12, "например 500")
-        right = tk.Frame(root, bg=T["bg"])
+        right = ScrollFrame(root)
         right.grid(row=1, column=1, sticky="nsew")
-        right.columnconfigure(0, weight=1)
-        right.rowconfigure(2, weight=1)
-        c_calc = Card(right, "Расчёт за день")
-        c_calc.grid(row=0, column=0, sticky="ew")
+        right.inner.columnconfigure(0, weight=1)
+        c_calc = Card(right.inner, "Расчёт за день")
+        c_calc.grid(row=0, column=0, sticky="new")
         bc = c_calc.body
         g = tk.Frame(bc, bg=T["surface"])
         g.pack(fill="x")
@@ -1252,8 +1271,8 @@ class App(tk.Tk):
         self.lbl_total_day = tk.Label(tot, text="0 ₽", bg=T["surface"], fg=T["ok"],
                                       font=(FONT, 20, "bold"))
         self.lbl_total_day.pack(side="right")
-        c_act = Card(right)
-        c_act.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        c_act = Card(right.inner)
+        c_act.grid(row=1, column=0, sticky="new", pady=(10, 0))
         pad = tk.Frame(c_act, bg=T["surface"])
         pad.pack(fill="x", padx=14, pady=12)
         self.btn_save = ttk.Button(pad, text="СОХРАНИТЬ ДЕНЬ   (Ctrl+S)",
@@ -1272,8 +1291,8 @@ class App(tk.Tk):
         self.lbl_approve = tk.Label(row3, text="", bg=T["surface"], fg=T["text_muted"],
                                     font=F_SMALL, anchor="w", justify="left")
         self.lbl_approve.pack(fill="x")
-        c_wk = Card(right, "Текущая неделя")
-        c_wk.grid(row=2, column=0, sticky="nsew", pady=(10, 0))
+        c_wk = Card(right.inner, "Текущая неделя")
+        c_wk.grid(row=2, column=0, sticky="new", pady=(10, 0))
         self.lbl_wk_range = tk.Label(c_wk.body, bg=T["surface"], fg=T["text_muted"],
                                      font=F_SMALL)
         self.lbl_wk_range.pack(anchor="w")
@@ -1368,9 +1387,8 @@ class App(tk.Tk):
         main.grid(row=0, column=1, sticky="nsew", pady=6)
         cols = ("date", "wd", "time", "hours", "xhours", "works", "total")
         titles = ("Дата", "День", "Время", "Часы", "Доп.", "Работы", "Итого, ₽")
-        widths = (92, 50, 120, 80, 74, 420, 110)
         self.htree = ttk.Treeview(main.body, columns=cols, show="headings")
-        for c, t, w in zip(cols, titles, widths):
+        for c, t, w in zip(cols, titles, HIST_WIDTHS):
             self.htree.heading(c, text=t)
             self.htree.column(c, width=w, anchor="center" if c != "works" else "w",
                               stretch=(c == "works"))
@@ -1385,7 +1403,9 @@ class App(tk.Tk):
 
     # ------------------------------------------------------- вкладка НАСТРОЙКИ
     def _build_settings_tab(self):
-        root = self.tab_set
+        scroll = ScrollFrame(self.tab_set)
+        scroll.pack(fill="both", expand=True)
+        root = scroll.inner
         root.columnconfigure(0, weight=1)
         root.columnconfigure(1, weight=1)
         c1 = Card(root, "Оплата")
@@ -1773,18 +1793,22 @@ class App(tk.Tk):
                 t = Totals(wk_buf)
                 if t.worked_days:
                     self.htree.insert("", "end", tags=("wtotal",), values=(
-                        "", "", "Итого за неделю", fmt_hm_short(t.work_min),
+                        "", "", "", fmt_hm_short(t.work_min),
                         fmt_hm_short(t.extra_min),
-                        "дней: %d" % t.worked_days, fmt_money(t.total_pay)))
+                        "Итого за неделю • дней: %d" % t.worked_days,
+                        fmt_money(t.total_pay)))
                 wk_buf = []
         mt = Totals(days)
         self.htree.insert("", "end", tags=("mtotal",), values=(
-            "", "", "ИТОГО ЗА %s" % month_title(anchor).upper(),
-            fmt_hm_short(mt.work_min), fmt_hm_short(mt.extra_min),
-            "оплата %s + доп %s + премия %s" % (fmt_money(mt.day_pay),
-                                                fmt_money(mt.extra_pay),
-                                                fmt_money(mt.bonus)),
+            "", "", "", fmt_hm_short(mt.work_min), fmt_hm_short(mt.extra_min),
+            "ИТОГО ЗА %s • дней: %d" % (month_title(anchor).upper(), mt.worked_days),
             fmt_money(mt.total_pay)))
+        self.htree.insert("", "end", tags=("mtotal",), values=(
+            "", "", "", "", "",
+            "из них: оплата %s + доп %s + премия %s − штраф %s"
+            % (fmt_money(mt.day_pay), fmt_money(mt.extra_pay),
+               fmt_money(mt.bonus), fmt_money(mt.penalty)),
+            ""))
         self._hist_anchor = anchor
 
     def _on_tab(self, _e):
@@ -2202,9 +2226,8 @@ class EmployeeView(tk.Frame):
         main.grid(row=0, column=0, sticky="nsew")
         cols = ("date", "wd", "time", "hours", "works", "total")
         titles = ("Дата", "День", "Время", "Часы", "Работы", "Итого, ₽")
-        widths = (92, 50, 120, 80, 420, 110)
         self.htree = ttk.Treeview(main.body, columns=cols, show="headings")
-        for c, t, w in zip(cols, titles, widths):
+        for c, t, w in zip(cols, titles, HIST_WIDTHS_MGR):
             self.htree.heading(c, text=t)
             self.htree.column(c, width=w, anchor="center" if c != "works" else "w",
                               stretch=(c == "works"))
@@ -2289,17 +2312,21 @@ class EmployeeView(tk.Frame):
                 t = Totals(wk_buf)
                 if t.worked_days:
                     self.htree.insert("", "end", tags=("wtotal",), values=(
-                        "", "", "Итого за неделю", fmt_hm_short(t.work_min),
-                        "дней: %d" % t.worked_days, fmt_money(t.total_pay)))
+                        "", "", "", fmt_hm_short(t.work_min),
+                        "Итого за неделю • дней: %d" % t.worked_days,
+                        fmt_money(t.total_pay)))
                 wk_buf = []
         mt = Totals(days)
         self.htree.insert("", "end", tags=("mtotal",), values=(
-            "", "", "ИТОГО ЗА %s" % month_title(anchor).upper(),
-            fmt_hm_short(mt.work_min),
-            "оплата %s + доп %s + премия %s − штраф %s"
+            "", "", "", fmt_hm_short(mt.work_min),
+            "ИТОГО ЗА %s • дней: %d" % (month_title(anchor).upper(), mt.worked_days),
+            fmt_money(mt.total_pay)))
+        self.htree.insert("", "end", tags=("mtotal",), values=(
+            "", "", "", "",
+            "из них: оплата %s + доп %s + премия %s − штраф %s"
             % (fmt_money(mt.day_pay), fmt_money(mt.extra_pay),
                fmt_money(mt.bonus), fmt_money(mt.penalty)),
-            fmt_money(mt.total_pay)))
+            ""))
 
     # ------------------------------------------------- настройки и отчёты
     def _build_set_tab(self):

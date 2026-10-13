@@ -1280,7 +1280,7 @@ class App(tk.Tk):
                    command=lambda: self.export("week", "pdf")).pack(side="right", padx=4)
         ttk.Button(bar, text="Карточка за месяц (PDF)", style="Accent.TButton",
                    command=lambda: self.export("month", "pdf")).pack(side="right", padx=4)
-        self.week_table = WeekTable(self, on_open_day=self._table_open_day)
+        self.week_table = WeekTable(root, on_open_day=self._table_open_day)
         self.week_table.grid(row=1, column=0, sticky="nsew")
         foot = tk.Frame(root, bg=T["bg"])
         foot.grid(row=2, column=0, sticky="ew", pady=(10, 0))
@@ -2042,7 +2042,7 @@ class EmployeeView(tk.Frame):
         tk.Label(bar, text="Клик по квадрату в колонке «Одобрено» = одобрить день",
                  bg=T["surface"], fg=T["text_muted"], font=F_SMALL).pack(side="right",
                                                                         padx=14)
-        self.week_table = WeekTable(self, on_approve=self._approve_date)
+        self.week_table = WeekTable(root, on_approve=self._approve_date)
         self.week_table.grid(row=1, column=0, sticky="nsew")
         paybar = tk.Frame(root, bg=T["surface"], highlightbackground=T["border"],
                           highlightthickness=1)

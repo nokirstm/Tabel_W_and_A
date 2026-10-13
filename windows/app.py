@@ -219,7 +219,7 @@ class WeekTable(tk.Frame):
         if self._head_works is not None:
             self._head_works.config(wraplength=new_w - 6)
         for row, lab in self._rows:
-            row.grid_columnconfigure(self._works_idx, minsize=new_w - 4)
+            row.grid_columnconfigure(self._works_idx, minsize=new_w)
             lab.config(wraplength=new_w - 8)
 
     def clear(self):
@@ -247,7 +247,7 @@ class WeekTable(tk.Frame):
                            justify="left" if c == "works" else "center",
                            anchor="w" if c == "works" else "center", pady=3)
             lab.grid(row=0, column=i, sticky="nsew", padx=2)
-            row.grid_columnconfigure(i, minsize=w - 4, weight=0)
+            row.grid_columnconfigure(i, minsize=w, weight=0)
             lab.bind("<MouseWheel>", self._wheel)
             if c == "works":
                 works_lab = lab
@@ -258,7 +258,7 @@ class WeekTable(tk.Frame):
             self._rows.append((row, works_lab))
             if self._layout_width > self._base_total:
                 new_w = WEEK_WIDTHS[self._works_idx] + (self._layout_width - self._base_total)
-                row.grid_columnconfigure(self._works_idx, minsize=new_w - 4)
+                row.grid_columnconfigure(self._works_idx, minsize=new_w)
                 works_lab.config(wraplength=new_w - 8)
         if clickable_approve and approved is False and self.on_approve:
             cell = row.grid_slaves(row=0, column=appr_idx)[0]

@@ -1206,21 +1206,21 @@ class SettingsScreen(Screen):
         # Состояния полей, которые теперь вводятся через нативный диалог
         self._restore_name_text = ""
         self._restore_birth_text = ""
-
+        self._employee_text = ""
+        self._organization_text = ""
+        self._secret_key_text = ""
         sc = ScrollView(do_scroll_x=False)
         self.add_widget(sc)
         body = BoxLayout(orientation="vertical", size_hint_y=None,
-            padding=[dp(10), dp(12)], spacing=dp(10))
+                         padding=[dp(10), dp(12)], spacing=dp(10))
         body.bind(minimum_height=body.setter("height"))
         sc.add_widget(body)
-
         c1 = Card("Оплата")
         self.f_rate = field("Ставка за час основной работы, ₽", "250", True)
         self.f_xrate = field("Ставка за час доп. работ, ₽", "250", True)
         c1.add_widget(self.f_rate)
         c1.add_widget(self.f_xrate)
         body.add_widget(c1)
-
         c2 = Card("По умолчанию для нового дня")
         self.f_ds = field("Начало работы", "8:00")
         self.f_de = field("Конец работы", "17:00")
@@ -1228,21 +1228,33 @@ class SettingsScreen(Screen):
         for f in (self.f_ds, self.f_de, self.f_dl):
             c2.add_widget(f)
         body.add_widget(c2)
-
         c3 = Card("Данные для отчётов")
-        self.f_emp = field("Ф. И. О. работника", "")
-        self.f_org = field("Организация / участок", "")
-        c3.add_widget(self.f_emp)
-        c3.add_widget(self.f_org)
+        c3.add_widget(TLabel("Ф. И. О. работника",
+                             size=12, color=C["text_muted"], height=dp(18)))
+        self.lbl_emp = FlatButton("Введите ФИО", height=48,
+                                  bg=C["white"], fg=C["text_muted"], size=16,
+                                  font=FONT, halign="center",
+                                  on_release=lambda *_: self._open_field_editor("employee"))
+        c3.add_widget(self.lbl_emp)
+        c3.add_widget(TLabel("Организация / участок",
+                             size=12, color=C["text_muted"], height=dp(18)))
+        self.lbl_org = FlatButton("Введите организацию", height=48,
+                                  bg=C["white"], fg=C["text_muted"], size=16,
+                                  font=FONT, halign="center",
+                                  on_release=lambda *_: self._open_field_editor("organization"))
+        c3.add_widget(self.lbl_org)
         body.add_widget(c3)
-
         c_sync = Card("Синхронизация с Windows", bg=hexc("#E3EDF7"))
-        self.f_key = field("Секретный ключ сотрудника (employee_token)", "")
-        c_sync.add_widget(self.f_key)
+        c_sync.add_widget(TLabel("Секретный ключ сотрудника (employee_token)",
+                                 size=12, color=C["text_muted"], height=dp(18)))
+        self.lbl_key = FlatButton("Введите секретный ключ", height=48,
+                                  bg=C["white"], fg=C["text_muted"], size=16,
+                                  font=FONT, halign="center",
+                                  on_release=lambda *_: self._open_field_editor("secret"))
+        c_sync.add_widget(self.lbl_key)
         self.f_emp_id = field("employee_id (заполнится автоматически)", "")
         self.f_emp_id.input.disabled = True
         c_sync.add_widget(self.f_emp_id)
-
         # === ФИО и Дата рождения — нативный ввод вместо Kivy TextInput ===
         # ФИО
         c_sync.add_widget(TLabel("ФИО (для восстановления аккаунта)",
@@ -1252,7 +1264,6 @@ class SettingsScreen(Screen):
                                            font=FONT, halign="center",
                                            on_release=lambda *_: self._open_field_editor("name"))
         c_sync.add_widget(self.lbl_restore_name)
-
         # Дата рождения
         c_sync.add_widget(TLabel("Дата рождения (ДД.ММ.ГГГГ)",
                                  size=12, color=C["text_muted"], height=dp(18)))
@@ -1261,7 +1272,6 @@ class SettingsScreen(Screen):
                                             font=FONT, halign="center",
                                             on_release=lambda *_: self._open_field_editor("birth"))
         c_sync.add_widget(self.lbl_restore_birth)
-
         self.lbl_sync = TLabel("", size=12, color=C["text_muted"])
         c_sync.add_widget(self.lbl_sync)
         sync_btns = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
@@ -1275,10 +1285,8 @@ class SettingsScreen(Screen):
         sync_btns.add_widget(self.btn_restore)
         c_sync.add_widget(sync_btns)
         body.add_widget(c_sync)
-
         body.add_widget(FlatButton("СОХРАНИТЬ НАСТРОЙКИ", height=54,
                                    on_release=lambda *_: self.save()))
-
         c4 = Card("Данные")
         c4.add_widget(TLabel("База: " + self.app.db.path, size=11,
                              color=C["text_muted"]))
@@ -1290,32 +1298,43 @@ class SettingsScreen(Screen):
                                              on_release=lambda *_: self.app.restore_controller.open())
         c4.add_widget(self.btn_restore_backup)
         body.add_widget(c4)
-
         body.add_widget(TLabel("Табель 2.0  •  учёт рабочего времени и выплат\nверсия 2.0.0",
                                size=12, color=C["text_muted"], halign="center"))
         body.add_widget(TLabel("С серверной синхронизацией", size=12,
                                color=C["accent_dark"], halign="center"))
         self.load()
 
-    # --- Нативный ввод для ФИО и даты рождения ---
+    # --- Нативный ввод для полей настроек ---
     def _open_field_editor(self, which, *_):
-        """Открывает нативный Android EditText для ФИО или даты рождения."""
+        """Открывает нативный Android EditText для поля настроек."""
         # Снимаем фокус со всех Kivy TextInput
         root = getattr(self.app, "root", None)
         if root:
             for w in root.walk():
                 if isinstance(w, TextInput) and w.focus:
                     w.focus = False
-
         if which == "name":
             title = "ФИО (для восстановления аккаунта)"
             current = self._restore_name_text
             kind = "text"
-        else:
+        elif which == "birth":
             title = "Дата рождения (ДД.ММ.ГГГГ)"
             current = self._restore_birth_text  # TextWatcher сам нормализует
             kind = "number"
-
+        elif which == "employee":
+            title = "Ф. И. О. работника"
+            current = self._employee_text
+            kind = "text"
+        elif which == "organization":
+            title = "Организация / участок"
+            current = self._organization_text
+            kind = "text"
+        elif which == "secret":
+            title = "Секретный ключ сотрудника"
+            current = self._secret_key_text
+            kind = "secret"
+        else:
+            return
         if not os.environ.get("ANDROID_ARGUMENT"):
             # Десктоп: Popup
             content = BoxLayout(orientation="vertical", spacing=dp(8), padding=[dp(10)] * 2)
@@ -1336,17 +1355,14 @@ class SettingsScreen(Screen):
             content.add_widget(row)
             popup.open()
             return
-
         try:
             from field_editor import FieldEditor
             if self._field_editor is None:
                 self._field_editor = FieldEditor()
-
             def completed(status, value):
                 Clock.schedule_once(lambda *_: _restart_soft_keyboard(), 0.2)
                 if status == "ok":
                     self._accept_field(which, value)
-
             self._field_editor.open(title, current, kind, completed)
         except Exception as ex:
             toast("Не удалось открыть редактор: %s" % ex, "warn")
@@ -1356,10 +1372,19 @@ class SettingsScreen(Screen):
         if which == "name":
             self._restore_name_text = value.strip()
             self._update_restore_labels()
-        else:
+        elif which == "birth":
             digits = "".join(ch for ch in value if ch.isdigit())[:8]
             self._restore_birth_text = _format_date_digits(digits)
             self._update_restore_labels()
+        elif which == "employee":
+            self._employee_text = value.strip()
+            self._update_field_labels()
+        elif which == "organization":
+            self._organization_text = value.strip()
+            self._update_field_labels()
+        elif which == "secret":
+            self._secret_key_text = value.strip()
+            self._update_field_labels()
 
     def _update_restore_labels(self):
         """Обновляет текст кнопок-превью."""
@@ -1369,13 +1394,34 @@ class SettingsScreen(Screen):
         else:
             self.lbl_restore_name.text = "Введите ФИО"
             self.lbl_restore_name.color = C["text_muted"]
-
         if self._restore_birth_text:
             self.lbl_restore_birth.text = self._restore_birth_text
             self.lbl_restore_birth.color = C["text"]
         else:
             self.lbl_restore_birth.text = "дд.мм.гггг"
             self.lbl_restore_birth.color = C["text_muted"]
+
+    def _update_field_labels(self):
+        """Обновляет превью для ФИО, Организации и Секретного ключа."""
+        if self._employee_text:
+            self.lbl_emp.text = self._employee_text
+            self.lbl_emp.color = C["text"]
+        else:
+            self.lbl_emp.text = "Введите ФИО"
+            self.lbl_emp.color = C["text_muted"]
+        if self._organization_text:
+            self.lbl_org.text = self._organization_text
+            self.lbl_org.color = C["text"]
+        else:
+            self.lbl_org.text = "Введите организацию"
+            self.lbl_org.color = C["text_muted"]
+        if self._secret_key_text:
+            # В превью ключ скрыт звёздочками; полностью виден только в диалоге
+            self.lbl_key.text = "•" * min(len(self._secret_key_text), 24)
+            self.lbl_key.color = C["text"]
+        else:
+            self.lbl_key.text = "Введите секретный ключ"
+            self.lbl_key.color = C["text_muted"]
 
     def load(self):
         db = self.app.db
@@ -1384,9 +1430,10 @@ class SettingsScreen(Screen):
         self.f_ds.input.text = db.get("default_start", "8:00")
         self.f_de.input.text = db.get("default_end", "17:00")
         self.f_dl.input.text = db.get("default_lunch", "60")
-        self.f_emp.input.text = db.get("employee", "")
-        self.f_org.input.text = db.get("organization", "")
-        self.f_key.input.text = db.get("employee_token", "") or db.get("secret_key", "")
+        self._employee_text = db.get("employee", "")
+        self._organization_text = db.get("organization", "")
+        self._secret_key_text = db.get("employee_token", "") or db.get("secret_key", "")
+        self._update_field_labels()
         self.f_emp_id.input.text = db.get("employee_id", "")
         emp_id = db.get("employee_id", "")
         if SYNC_AVAILABLE and self.app.sync_client:
@@ -1403,10 +1450,11 @@ class SettingsScreen(Screen):
         db.set("default_start", self.f_ds.input.text or "8:00")
         db.set("default_end", self.f_de.input.text or "17:00")
         db.set("default_lunch", self.f_dl.input.text or "60")
-        db.set("employee", self.f_emp.input.text)
-        db.set("secret_key", self.f_key.input.text)
+        db.set("employee", self._employee_text)
+        db.set("organization", self._organization_text)
+        db.set("secret_key", self._secret_key_text)
+        db.set("employee_token", self._secret_key_text)
         db.set("employee_id", self.f_emp_id.input.text)
-        db.set("organization", self.f_org.input.text)
         toast("Настройки сохранены")
 
     def bind_device(self):
@@ -1414,14 +1462,13 @@ class SettingsScreen(Screen):
         if not (SYNC_AVAILABLE and self.app.sync_client):
             toast("Синхронизация недоступна", "warn")
             return
-        token = self.f_key.input.text.strip()
+        token = self._secret_key_text.strip()
         if not token:
             toast("Введите секретный ключ сотрудника", "warn")
             return
         self.btn_bind.disabled = True
         self.btn_restore.disabled = True
         self.lbl_sync.text = "Привязка устройства…"
-
         def callback(result):
             def apply():
                 self.btn_bind.disabled = False
@@ -1440,7 +1487,6 @@ class SettingsScreen(Screen):
                     self.lbl_sync.text = "Ошибка: %s" % result.get("error", "неизвестно")
                     toast("Привязка не удалась", "warn")
             Clock.schedule_once(lambda *_: apply(), 0)
-
         self.app.sync_client.send_async("bind_device", token, callback=callback)
 
     def restore_account(self):
@@ -1462,7 +1508,6 @@ class SettingsScreen(Screen):
         self.btn_bind.disabled = True
         self.btn_restore.disabled = True
         self.lbl_sync.text = "Восстановление аккаунта…"
-
         def callback(result):
             def apply():
                 self.btn_bind.disabled = False
@@ -1473,7 +1518,6 @@ class SettingsScreen(Screen):
                     return
                 self._import_server_state(result)
             Clock.schedule_once(lambda *_: apply(), 0)
-
         self.app.sync_client.send_async("restore_account", name, birth_iso, callback=callback)
 
     def _import_server_state(self, result):

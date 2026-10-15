@@ -1,8 +1,9 @@
 # -- coding: utf-8 --
-"""Табель — учёт рабочего времени и выплат. Windows (Tkinter). ВЕРСИЯ 2.0.8-charts."""
+"""Табель — учёт рабочего времени и выплат. Windows (Tkinter). ВЕРСИЯ 2.0.9-chartprint."""
 import os
 import sys
 import json
+import copy
 import queue
 import traceback
 import tempfile
@@ -137,29 +138,14 @@ def _week_values(e):
             fmt_money(e.total_pay) if e.total_pay else "—",
             "✓" if e.approved_at else ("■" if not e.is_empty else " "))
 
-def _print_pdf_report(owner, title, days, meta):
-    """Генерация PDF во временную папку и отправка в системную печать.
-    Если verb print недоступен — открытие файла в просмотрщике."""
+def _open_pdf(path, owner):
+    """Открытие PDF в просмотрщике обычным запуском (НЕ тихая печать):
+    защитник Foxit/Adobe не предупреждает о неподписанном exe."""
     try:
-        _ensure_pdf_fonts()
-        path = os.path.join(tempfile.gettempdir(),
-                            "tabel_print_%s.pdf" % dt.datetime.now().strftime("%y%m%d_%H%M%S"))
-        reports.export_pdf(path, title, days, meta)
-    except ImportError as ex:
-        messagebox.showerror("Нет библиотеки", str(ex))
-        return
-    except Exception as ex:
-        messagebox.showerror("Ошибка подготовки печати", str(ex))
-        return
-    try:
-        os.startfile(path, "print")
-        ui.toast(owner, "Отправлено на печать")
+        os.startfile(path)
+        ui.toast(owner, "PDF открыт: распечатайте из просмотрщика (Ctrl+P)")
     except Exception:
-        try:
-            os.startfile(path)
-            ui.toast(owner, "PDF открыт: распечатайте из просмотрщика", "warn")
-        except Exception:
-            ui.toast(owner, "Не удалось открыть PDF: " + path, "err")
+        ui.toast(owner, "Не удалось открыть PDF: " + path, "err")
 
 class WeekTable(tk.Frame):
     def __init__(self, master, on_approve=None, on_open_day=None):
@@ -456,6 +442,7 @@ class App(tk.Tk):
         self.manager_root = None
         self.sync_queue = queue.Queue()
         self.sync_client = None
+        self._chart_mode = "week"
         self._list_cache = {"active": {"ts": 0, "result": None}, "archived": {"ts": 0, "result": None}}
 
         if SYNC_AVAILABLE:
@@ -1117,7 +1104,7 @@ class App(tk.Tk):
         ttk.Button(bar, text="Excel: неделя", style="Ghost.TButton", command=lambda: self.export("week", "xlsx")).pack(side="right", padx=(4, 10))
         ttk.Button(bar, text="PDF: неделя", style="Ghost.TButton", command=lambda: self.export("week", "pdf")).pack(side="right", padx=4)
         ttk.Button(bar, text="Карточка за месяц (PDF)", style="Accent.TButton", command=lambda: self.export("month", "pdf")).pack(side="right", padx=4)
-        ttk.Button(bar, text="Распечатать", style="Ghost.TButton", command=self.print_week).pack(side="right", padx=4)
+        ttk.Button(bar, text="Распечатать график", style="Ghost.TButton", command=self.print_chart).pack(side="right", padx=4)
         ttk.Button(bar, text="Показать график", style="Ghost.TButton", command=self.show_chart).pack(side="right", padx=4)
         self.week_table = WeekTable(root, on_open_day=self._table_open_day)
         self.week_table.grid(row=1, column=0, sticky="nsew")
@@ -1568,20 +1555,35 @@ class App(tk.Tk):
             title = "Неделя " + week_title(self.current)
         return title, self.current, self.db.range_days(a, b)
 
+    def _set_chart_mode(self, mode):
+        self._chart_mode = mode
+
     def show_chart(self):
         if not CHARTS_AVAILABLE:
             ui.toast(self, "Модуль графиков не найден: добавьте windows/charts.py", "err"); return
         charts.ChartDialog(self, self.db.get("employee", "") or "Сотрудник",
-                           self._chart_provider, mode="week")
+                           self._chart_provider, mode=self._chart_mode,
+                           on_mode=self._set_chart_mode)
 
-    def print_week(self):
-        a, b = week_range(self.current)
-        days = self.db.range_days(a, b)
+    def print_chart(self):
+        """Печать графика (не таблицы): PDF графика открывается в просмотрщике."""
+        if not CHARTS_AVAILABLE:
+            ui.toast(self, "Модуль графиков не найден: добавьте windows/charts.py", "err"); return
+        mode = getattr(self, "_chart_mode", "week")
+        title, anchor, days = self._chart_provider(mode)
+        groups = charts.build_groups(days, mode, anchor)
         meta = {"employee": self.db.get("employee", ""),
-                "organization": self.db.get("organization", ""),
-                "rate": self.db.get("rate", "250"), "period": "week",
-                "received": self._received_map(a, b)}
-        _print_pdf_report(self, "Неделя " + week_title(self.current), days, meta)
+                "organization": self.db.get("organization", "")}
+        path = os.path.join(tempfile.gettempdir(),
+                            "tabel_chart_%s.pdf" % dt.datetime.now().strftime("%y%m%d_%H%M%S"))
+        try:
+            _ensure_pdf_fonts()
+            reports.export_chart_pdf(path, "График заработков: " + title, groups, meta)
+        except ImportError as ex:
+            messagebox.showerror("Нет библиотеки", str(ex)); return
+        except Exception as ex:
+            messagebox.showerror("Ошибка подготовки графика", str(ex)); return
+        _open_pdf(path, self)
 
     def export(self, period, fmt):
         if period == "week":
@@ -1591,7 +1593,8 @@ class App(tk.Tk):
         else:
             anchor = getattr(self, "_hist_anchor", self.current)
             a, b = month_range(anchor)
-            title = "Карточка учёта рабочего времени и выплат за %s" % month_title(anchor)
+            title = ("Карточка учёта рабочего времени и выплат\nза %s"
+                     % month_title(anchor))
             name = "tabel_%s" % anchor.strftime("%Y-%m")
         days = self.db.range_days(a, b)
         ext = ".xlsx" if fmt == "xlsx" else ".pdf"
@@ -1782,6 +1785,7 @@ class EmployeeView(tk.Frame):
         self.state = {}
         self.payments = {}
         self._meta = {}
+        self._chart_mode = "week"
 
         top = tk.Frame(self, bg=T["bg"])
         top.pack(fill="x", pady=(0, 10))
@@ -1852,7 +1856,7 @@ class EmployeeView(tk.Frame):
         self.lbl_week.pack(side="left", padx=8)
         ttk.Button(bar, text="▶", style="Nav.TButton", command=lambda: self.shift_week(1)).pack(side="left", padx=6)
         ttk.Button(bar, text="Текущая неделя", style="Ghost.TButton", command=self.goto_today).pack(side="left")
-        ttk.Button(bar, text="Распечатать", style="Ghost.TButton", command=self.print_week).pack(side="right", padx=4)
+        ttk.Button(bar, text="Распечатать график", style="Ghost.TButton", command=self.print_chart).pack(side="right", padx=4)
         ttk.Button(bar, text="Показать график", style="Ghost.TButton", command=self.show_chart).pack(side="right", padx=4)
         if not self.archived:
             tk.Label(bar, text="Клик по квадрату в колонке «Одобрено» = одобрить день", bg=T["surface"], fg=T["text_muted"], font=F_SMALL).pack(side="right", padx=14)
@@ -1951,8 +1955,18 @@ class EmployeeView(tk.Frame):
                 if p["confirmed"] and a.isoformat() <= w <= b.isoformat()}
 
     def _state_days_range(self, a, b):
-        return [self.state[d]["entry"] for d in sorted(self.state.keys())
-                if a.isoformat() <= d <= b.isoformat()]
+        """Дни диапазона; approved_at подставляется из состояния сервера,
+        чтобы в PDF/Excel появились жирные зелёные галочки «Одобрено»."""
+        out = []
+        for d in sorted(self.state.keys()):
+            if a.isoformat() <= d <= b.isoformat():
+                rec = self.state[d]
+                e = rec["entry"]
+                if not e.approved_at and rec.get("approved_at"):
+                    e = copy.copy(e)
+                    e.approved_at = rec["approved_at"]
+                out.append(e)
+        return out
 
     def _chart_provider(self, mode):
         if mode == "month":
@@ -1966,20 +1980,35 @@ class EmployeeView(tk.Frame):
             title = "Неделя " + week_title(self.current)
         return title, self.current, self._state_days_range(a, b)
 
+    def _set_chart_mode(self, mode):
+        self._chart_mode = mode
+
     def show_chart(self):
         if not CHARTS_AVAILABLE:
             ui.toast(self.app, "Модуль графиков не найден: добавьте windows/charts.py", "err"); return
         name = str(self._meta.get("name") or self.emp.get("name") or "")
-        charts.ChartDialog(self.app, name or "Сотрудник", self._chart_provider, mode="week")
+        charts.ChartDialog(self.app, name or "Сотрудник", self._chart_provider,
+                           mode=self._chart_mode, on_mode=self._set_chart_mode)
 
-    def print_week(self):
-        a, b = week_range(self.current)
-        days = self._state_days_range(a, b)
+    def print_chart(self):
+        if not CHARTS_AVAILABLE:
+            ui.toast(self.app, "Модуль графиков не найден: добавьте windows/charts.py", "err"); return
+        mode = getattr(self, "_chart_mode", "week")
+        title, anchor, days = self._chart_provider(mode)
         name = str(self._meta.get("name") or self.emp.get("name") or "")
-        meta = {"employee": name, "organization": "",
-                "rate": str(days[-1].rate) if days else "250", "period": "week",
-                "received": self._received_map(a, b)}
-        _print_pdf_report(self.app, "Неделя %s — %s" % (week_title(self.current), name), days, meta)
+        groups = charts.build_groups(days, mode, anchor)
+        meta = {"employee": name, "organization": ""}
+        full = "График заработков: %s%s" % (title, (" — " + name) if name else "")
+        path = os.path.join(tempfile.gettempdir(),
+                            "tabel_chart_%s.pdf" % dt.datetime.now().strftime("%y%m%d_%H%M%S"))
+        try:
+            _ensure_pdf_fonts()
+            reports.export_chart_pdf(path, full, groups, meta)
+        except ImportError as ex:
+            messagebox.showerror("Нет библиотеки", str(ex)); return
+        except Exception as ex:
+            messagebox.showerror("Ошибка подготовки графика", str(ex)); return
+        _open_pdf(path, self.app)
 
     def archive_employee(self):
         if self.archived: return
@@ -2106,7 +2135,7 @@ class EmployeeView(tk.Frame):
                     fmt_hm_short(e.work_min),
                     (e.works.replace("\n", " ")[:150] or "—") + ("  ✓" if rec.get("approved_at") else ""),
                     fmt_money(e.total_pay)))
-                i += 1
+            i += 1
             wk_buf.append(e)
             if d.weekday() == 6 or d == b:
                 t = Totals(wk_buf)
@@ -2165,7 +2194,8 @@ class EmployeeView(tk.Frame):
             fname = "tabel_nedelya_%s_%s" % (a.isoformat(), self.emp.get("employee_id", "")[:8])
         else:
             a, b = month_range(self.current)
-            title = "Карточка учёта рабочего времени и выплат за %s — %s" % (month_title(self.current), name)
+            title = ("Карточка учёта рабочего времени и выплат\nза %s — %s"
+                     % (month_title(self.current), name))
             fname = "tabel_%s_%s" % (self.current.strftime("%Y-%m"), self.emp.get("employee_id", "")[:8])
         days = self._state_days_range(a, b)
         ext = ".xlsx" if fmt == "xlsx" else ".pdf"

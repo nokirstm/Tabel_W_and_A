@@ -16,7 +16,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 
 public class FieldEditor {
 
-    private static final LinkedBlockingQueue<String> results = new LinkedBlockingQueue<>();
+    private static final LinkedBlockingQueue results = new LinkedBlockingQueue<>();
 
     public static String poll(long timeoutMs) {
         try {
@@ -41,11 +41,16 @@ public class FieldEditor {
 
                     if ("number".equals(inputKind)) {
                         edit.setInputType(InputType.TYPE_CLASS_NUMBER);
+                    } else if ("secret".equals(inputKind)) {
+                        // Секретный ключ: текст в открытую, но без автозамены и подсказок
+                        edit.setInputType(InputType.TYPE_CLASS_TEXT
+                                | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
                     } else {
+                        // Обычный текст: заглавные буквы, автокоррекция (для ФИО, Организации)
                         edit.setInputType(
-                            InputType.TYPE_CLASS_TEXT
-                            | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
-                            | InputType.TYPE_TEXT_FLAG_CAP_WORDS
+                                InputType.TYPE_CLASS_TEXT
+                                | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
+                                | InputType.TYPE_TEXT_FLAG_CAP_WORDS
                         );
                     }
                     edit.setSingleLine(true);
@@ -115,49 +120,49 @@ public class FieldEditor {
                     container.addView(edit);
 
                     AlertDialog dialog = new AlertDialog.Builder(activity)
-                        .setTitle(title)
-                        .setView(container)
-                        .setPositiveButton("Готово", new DialogInterface.OnClickListener() {
-                            @Override
-                            public void onClick(DialogInterface d, int which) {
-                                String val = edit.getText().toString();
-                                String json = "{\"token\":\"" + token
-                                    + "\",\"status\":\"ok\",\"text\":\""
-                                    + escapeJson(val) + "\"}";
-                                results.offer(json);
-                            }
-                        })
-                        .setNegativeButton("Отмена", new DialogInterface.OnClickListener() {
-                            @Override
-                            public void onClick(DialogInterface d, int which) {
-                                String json = "{\"token\":\"" + token
-                                    + "\",\"status\":\"cancel\",\"text\":\"\"}";
-                                results.offer(json);
-                            }
-                        })
-                        .setOnDismissListener(new DialogInterface.OnDismissListener() {
-                            @Override
-                            public void onDismiss(DialogInterface d) {
-                                InputMethodManager imm = (InputMethodManager)
-                                    activity.getSystemService(Activity.INPUT_METHOD_SERVICE);
-                                if (imm != null && activity.getCurrentFocus() != null) {
-                                    imm.hideSoftInputFromWindow(
-                                        activity.getCurrentFocus().getWindowToken(), 0);
+                            .setTitle(title)
+                            .setView(container)
+                            .setPositiveButton("Готово", new DialogInterface.OnClickListener() {
+                                @Override
+                                public void onClick(DialogInterface d, int which) {
+                                    String val = edit.getText().toString();
+                                    String json = "{\"token\":\"" + token
+                                            + "\",\"status\":\"ok\",\"text\":\""
+                                            + escapeJson(val) + "\"}";
+                                    results.offer(json);
                                 }
-                            }
-                        })
-                        .create();
+                            })
+                            .setNegativeButton("Отмена", new DialogInterface.OnClickListener() {
+                                @Override
+                                public void onClick(DialogInterface d, int which) {
+                                    String json = "{\"token\":\"" + token
+                                            + "\",\"status\":\"cancel\",\"text\":\"\"}";
+                                    results.offer(json);
+                                }
+                            })
+                            .setOnDismissListener(new DialogInterface.OnDismissListener() {
+                                @Override
+                                public void onDismiss(DialogInterface d) {
+                                    InputMethodManager imm = (InputMethodManager)
+                                            activity.getSystemService(Activity.INPUT_METHOD_SERVICE);
+                                    if (imm != null && activity.getCurrentFocus() != null) {
+                                        imm.hideSoftInputFromWindow(
+                                                activity.getCurrentFocus().getWindowToken(), 0);
+                                    }
+                                }
+                            })
+                            .create();
 
                     dialog.getWindow().setSoftInputMode(
-                        android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE
-                        | android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+                            android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE
+                                    | android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
                     dialog.show();
                     edit.requestFocus();
 
                 } catch (Exception ex) {
                     String json = "{\"token\":\"" + token
-                        + "\",\"status\":\"error\",\"text\":\""
-                        + escapeJson(ex.getMessage()) + "\"}";
+                            + "\",\"status\":\"error\",\"text\":\""
+                            + escapeJson(ex.getMessage()) + "\"}";
                     results.offer(json);
                 }
             }

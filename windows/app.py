@@ -1247,8 +1247,10 @@ class App(tk.Tk):
         self.lbl_total_day.config(text=fmt_money(e.total_pay))
 
     def load_date(self, d):
-        self._loading = True
         self.current = d
+        if self.role == "manager" or getattr(self, "nb", None) is None:
+            return
+        self._loading = True
         e = self.db.load_day(d)
         self.lbl_wd.config(text=WEEKDAYS_RU[d.weekday()])
         self.lbl_date.config(text="%02d.%02d.%d" % (d.day, d.month, d.year))

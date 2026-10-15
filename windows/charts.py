@@ -1,7 +1,8 @@
 # -- coding: utf-8 --
 """График заработков: диалог на Tkinter Canvas без внешних библиотек.
 Составные столбцы (основная работа / доп. / премия), красные блоки штрафов
-у верхней линии, легенда и переключатель вида «неделя / месяц / год»."""
+у верхней линии, легенда и переключатель вида «неделя / месяц / год».
+Колбэк on_mode позволяет приложению запомнить выбранный вид для печати."""
 import math
 import datetime as dt
 import tkinter as tk
@@ -71,15 +72,16 @@ def build_groups(days, mode, anchor):
 
 
 class ChartDialog(tk.Toplevel):
-    """provider(mode) -> (title, anchor_date, days)."""
+    """provider(mode) -> (title, anchor_date, days); on_mode(mode) — колбэк."""
 
     MODE_TITLES = {"week": "за неделю", "month": "за месяц", "year": "за год"}
 
-    def __init__(self, master, subject, provider, mode="week"):
+    def __init__(self, master, subject, provider, mode="week", on_mode=None):
         super().__init__(master)
         self.subject = subject
         self.provider = provider
         self.mode = mode
+        self.on_mode = on_mode
         self.title("График — " + subject)
         self.geometry("980x640")
         self.minsize(720, 480)
@@ -133,6 +135,11 @@ class ChartDialog(tk.Toplevel):
     def _set_mode(self, mode):
         self.mode = mode
         self.btn_view.config(text="Вид отображения: " + self.MODE_TITLES[mode])
+        if self.on_mode:
+            try:
+                self.on_mode(mode)
+            except Exception:
+                pass
         self.redraw()
 
     def redraw(self):
@@ -160,16 +167,13 @@ class ChartDialog(tk.Toplevel):
                                     fill=T["text_muted"], font=ui.F_H2)
             return
         max_stack = max_stack or 1
-        # оси
         self.canvas.create_line(left, top - 6, left, h - bottom, fill="#22313F", width=2)
         self.canvas.create_line(left, h - bottom, w - right, h - bottom,
                                 fill="#22313F", width=2)
-        # линия штрафов сверху
         if max_pen > 0:
             self.canvas.create_line(left, 26, w - right, 26, fill="#000000", width=3)
             self.canvas.create_text(left + 4, 12, text="ШТРАФ", anchor="w",
                                     fill=PEN_COLOR, font=(FONT, 11, "bold"))
-        # насечки оси Y
         step = _nice_step(max_stack / 4.0)
         v = 0.0
         while v <= max_stack + 1e-9:
@@ -190,7 +194,6 @@ class ChartDialog(tk.Toplevel):
                 if value <= 0:
                     continue
                 hh = value / max_stack * plot_h
-                # белая обводка разделяет сегменты одинакового цвета
                 self.canvas.create_rectangle(cx - bar_w / 2, y - hh, cx + bar_w / 2, y,
                                              fill=color, outline="#FFFFFF", width=1)
                 y -= hh

@@ -843,6 +843,9 @@ class App(tk.Tk):
             mr = self.manager_root
             if mr is not None and mr.winfo_exists():
                 mr.refresh_list()
+            tok = str(result.get("employee_token") or "")
+            if tok:
+                TokenDialog(self, tok)
         else:
             ui.toast(self, "Ошибка создания: %s" % result.get("error"), "err")
 
@@ -2381,6 +2384,8 @@ class EmployeeView(tk.Frame):
                    command=self.request_state).pack(side="left", padx=(8, 0))
         ttk.Button(row2, text="Открыть папку с данными", style="Ghost.TButton",
                    command=self.open_data_folder).pack(side="left", padx=(8, 0))
+        ttk.Button(row2, text="Показать токен сотрудника", style="Ghost.TButton",
+                   command=self.show_emp_token).pack(side="left", padx=(8, 0))
 
     def _state_days_range(self, a, b):
         return [self.state[d]["entry"] for d in sorted(self.state.keys())
@@ -2445,6 +2450,14 @@ class EmployeeView(tk.Frame):
             os.startfile(folder)
         except AttributeError:
             os.system('xdg-open "%s"' % folder)
+
+    def show_emp_token(self):
+        tok = str((self._meta or {}).get("employee_token") or "")
+        if tok:
+            TokenDialog(self.app, tok)
+        else:
+            ui.toast(self.app, "Сервер не вернул токен: обновите code.gs "
+                               "(строка employee_token в fetch_employee_state)", "warn")
 
     def refresh_set(self):
         meta = self._meta or {}

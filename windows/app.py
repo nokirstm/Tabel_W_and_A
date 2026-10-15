@@ -1,10 +1,11 @@
 # -- coding: utf-8 --
-"""Табель — учёт рабочего времени и выплат. Windows (Tkinter). ВЕРСИЯ 2.0.7-archive."""
+"""Табель — учёт рабочего времени и выплат. Windows (Tkinter). ВЕРСИЯ 2.0.8-charts."""
 import os
 import sys
 import json
 import queue
 import traceback
+import tempfile
 import datetime as dt
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -22,6 +23,11 @@ import ui_kit as ui
 from ui_kit import (Card, Field, Toggle, StatTile, ScrollFrame,
                     FONT, F_BODY, F_BODY_B, F_SMALL)
 import reports
+try:
+    import charts
+    CHARTS_AVAILABLE = True
+except ImportError:
+    CHARTS_AVAILABLE = False
 
 try:
     from sync_client import SyncClient
@@ -130,6 +136,30 @@ def _week_values(e):
             fmt_money(e.penalty) if e.penalty else "—",
             fmt_money(e.total_pay) if e.total_pay else "—",
             "✓" if e.approved_at else ("■" if not e.is_empty else " "))
+
+def _print_pdf_report(owner, title, days, meta):
+    """Генерация PDF во временную папку и отправка в системную печать.
+    Если verb print недоступен — открытие файла в просмотрщике."""
+    try:
+        _ensure_pdf_fonts()
+        path = os.path.join(tempfile.gettempdir(),
+                            "tabel_print_%s.pdf" % dt.datetime.now().strftime("%y%m%d_%H%M%S"))
+        reports.export_pdf(path, title, days, meta)
+    except ImportError as ex:
+        messagebox.showerror("Нет библиотеки", str(ex))
+        return
+    except Exception as ex:
+        messagebox.showerror("Ошибка подготовки печати", str(ex))
+        return
+    try:
+        os.startfile(path, "print")
+        ui.toast(owner, "Отправлено на печать")
+    except Exception:
+        try:
+            os.startfile(path)
+            ui.toast(owner, "PDF открыт: распечатайте из просмотрщика", "warn")
+        except Exception:
+            ui.toast(owner, "Не удалось открыть PDF: " + path, "err")
 
 class WeekTable(tk.Frame):
     def __init__(self, master, on_approve=None, on_open_day=None):
@@ -426,8 +456,6 @@ class App(tk.Tk):
         self.manager_root = None
         self.sync_queue = queue.Queue()
         self.sync_client = None
-        
-        # Кэш списков сотрудников (Задача 2)
         self._list_cache = {"active": {"ts": 0, "result": None}, "archived": {"ts": 0, "result": None}}
 
         if SYNC_AVAILABLE:
@@ -1089,6 +1117,8 @@ class App(tk.Tk):
         ttk.Button(bar, text="Excel: неделя", style="Ghost.TButton", command=lambda: self.export("week", "xlsx")).pack(side="right", padx=(4, 10))
         ttk.Button(bar, text="PDF: неделя", style="Ghost.TButton", command=lambda: self.export("week", "pdf")).pack(side="right", padx=4)
         ttk.Button(bar, text="Карточка за месяц (PDF)", style="Accent.TButton", command=lambda: self.export("month", "pdf")).pack(side="right", padx=4)
+        ttk.Button(bar, text="Распечатать", style="Ghost.TButton", command=self.print_week).pack(side="right", padx=4)
+        ttk.Button(bar, text="Показать график", style="Ghost.TButton", command=self.show_chart).pack(side="right", padx=4)
         self.week_table = WeekTable(root, on_open_day=self._table_open_day)
         self.week_table.grid(row=1, column=0, sticky="nsew")
         foot = tk.Frame(root, bg=T["bg"])
@@ -1516,6 +1546,43 @@ class App(tk.Tk):
         try: os.startfile(folder)
         except AttributeError: os.system('xdg-open "%s"' % folder)
 
+    # --------------------------------------------------- график и печать
+    def _received_map(self, a, b):
+        out = {}
+        cur = week_start(a)
+        while cur <= b:
+            if self.db.week_received(cur):
+                out[cur.isoformat()] = self.db.received_on(cur)
+            cur += dt.timedelta(days=7)
+        return out
+
+    def _chart_provider(self, mode):
+        if mode == "month":
+            a, b = month_range(self.current)
+            title = month_title(self.current)
+        elif mode == "year":
+            a, b = dt.date(self.current.year, 1, 1), dt.date(self.current.year, 12, 31)
+            title = "%d год" % self.current.year
+        else:
+            a, b = week_range(self.current)
+            title = "Неделя " + week_title(self.current)
+        return title, self.current, self.db.range_days(a, b)
+
+    def show_chart(self):
+        if not CHARTS_AVAILABLE:
+            ui.toast(self, "Модуль графиков не найден: добавьте windows/charts.py", "err"); return
+        charts.ChartDialog(self, self.db.get("employee", "") or "Сотрудник",
+                           self._chart_provider, mode="week")
+
+    def print_week(self):
+        a, b = week_range(self.current)
+        days = self.db.range_days(a, b)
+        meta = {"employee": self.db.get("employee", ""),
+                "organization": self.db.get("organization", ""),
+                "rate": self.db.get("rate", "250"), "period": "week",
+                "received": self._received_map(a, b)}
+        _print_pdf_report(self, "Неделя " + week_title(self.current), days, meta)
+
     def export(self, period, fmt):
         if period == "week":
             a, b = week_range(self.current)
@@ -1531,7 +1598,8 @@ class App(tk.Tk):
         path = filedialog.asksaveasfilename(defaultextension=ext, initialfile=name + ext, filetypes=[(ext[1:].upper(), "*" + ext)])
         if not path: return
         meta = {"employee": self.db.get("employee", ""), "organization": self.db.get("organization", ""),
-                "rate": self.db.get("rate", "250"), "period": period}
+                "rate": self.db.get("rate", "250"), "period": period,
+                "received": self._received_map(a, b)}
         try:
             if fmt == "xlsx": reports.export_xlsx(path, title, days, meta)
             else:
@@ -1565,21 +1633,17 @@ class ManagerRoot(tk.Frame):
         super().__init__(app, bg=T["bg"])
         self.app = app
         self.list_mode = "active"
-        
         self.top_frame = tk.Frame(self, bg=T["bg"])
         self.top_frame.pack(fill="x", pady=(0, 14))
-        
         self.list_frame = tk.Frame(self, bg=T["bg"])
         self.list_frame.pack(fill="both", expand=True)
-        
         self.footer = tk.Frame(self, bg=T["bg"])
         self.footer.pack(fill="x", side="bottom", pady=(10, 0))
-        self.btn_archived = tk.Button(self.footer, text="Архивные сотрудники", 
+        self.btn_archived = tk.Button(self.footer, text="Архивные сотрудники",
                                       bg="#9AA7B2", fg="#FFFFFF", font=ui.F_BODY_B,
-                                      relief="flat", bd=0, cursor="hand2", 
+                                      relief="flat", bd=0, cursor="hand2",
                                       command=self.switch_to_archived, padx=20, pady=10)
         self.btn_archived.pack(side="right", padx=20)
-        
         self._build_top_bar()
         self.refresh_list()
 
@@ -1616,19 +1680,15 @@ class ManagerRoot(tk.Frame):
         if not (mgr_id and mgr_tok):
             self._show_message("Нет данных руководителя. Выполните регистрацию.")
             return
-            
         cache_key = self.list_mode
         cache = self.app._list_cache[cache_key]
         now = dt.datetime.now().timestamp()
-        
         if cache["result"] is not None:
             if cache_key == "active": self._apply_list_result(cache["result"])
             else: self._apply_archived_result(cache["result"])
             if (now - cache["ts"]) < 60 and not force: return
-
         if cache["result"] is None:
             tk.Label(self.list_frame, text="Загрузка списка…", bg=T["bg"], fg=T["text_muted"], font=F_BODY).pack(pady=24)
-            
         if self.list_mode == "active":
             self.app.sync_client.send_async("list_employees", mgr_id, mgr_tok, callback=lambda r: self.app.sync_queue.put(("list_emp", r)))
         else:
@@ -1722,13 +1782,13 @@ class EmployeeView(tk.Frame):
         self.state = {}
         self.payments = {}
         self._meta = {}
-        
+
         top = tk.Frame(self, bg=T["bg"])
         top.pack(fill="x", pady=(0, 10))
         ttk.Button(top, text="← К списку сотрудников", style="Ghost.TButton", command=self.close).pack(side="left")
         tk.Label(top, text=str(employee.get("name", "")).upper(), bg=T["bg"], fg=T["accent_dark"], font=ui.F_GIANT).pack(side="left", padx=18)
         ttk.Button(top, text="Обновить с сервера", style="Ghost.TButton", command=self.request_state).pack(side="right")
-        
+
         self.nb = ttk.Notebook(self)
         self.nb.pack(fill="both", expand=True)
         self.tab_week = tk.Frame(self.nb, bg=T["bg"])
@@ -1738,7 +1798,6 @@ class EmployeeView(tk.Frame):
         self.nb.add(self.tab_hist, text="История")
         self.nb.add(self.tab_set, text="Настройки")
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab)
-        
         self._build_week_tab()
         self._build_hist_tab()
         self._build_set_tab()
@@ -1793,15 +1852,15 @@ class EmployeeView(tk.Frame):
         self.lbl_week.pack(side="left", padx=8)
         ttk.Button(bar, text="▶", style="Nav.TButton", command=lambda: self.shift_week(1)).pack(side="left", padx=6)
         ttk.Button(bar, text="Текущая неделя", style="Ghost.TButton", command=self.goto_today).pack(side="left")
+        ttk.Button(bar, text="Распечатать", style="Ghost.TButton", command=self.print_week).pack(side="right", padx=4)
+        ttk.Button(bar, text="Показать график", style="Ghost.TButton", command=self.show_chart).pack(side="right", padx=4)
         if not self.archived:
             tk.Label(bar, text="Клик по квадрату в колонке «Одобрено» = одобрить день", bg=T["surface"], fg=T["text_muted"], font=F_SMALL).pack(side="right", padx=14)
         else:
             tk.Label(bar, text="Режим архива: только чтение", bg=T["surface"], fg=T["text_muted"], font=F_SMALL).pack(side="right", padx=14)
-            
         on_approve = None if self.archived else self._approve_date
         self.week_table = WeekTable(root, on_approve=on_approve)
         self.week_table.grid(row=1, column=0, sticky="nsew")
-        
         if not self.archived:
             paybar = tk.Frame(root, bg=T["surface"], highlightbackground=T["border"], highlightthickness=1)
             paybar.grid(row=2, column=0, sticky="ew", pady=(10, 0))
@@ -1852,7 +1911,6 @@ class EmployeeView(tk.Frame):
                       fmt_money(t.day_pay), fmt_money(t.extra_pay), fmt_money(t.bonus),
                       fmt_money(t.penalty), fmt_money(t.total_pay), "")
         self.week_table.add_row(None, total_vals, bg="#D6E6F4", fg=APPROVED_COLOR if closed else T["text"], is_total=True)
-        
         if not self.archived and self.lbl_week_pay is not None:
             filled = [e for e in days if not e.is_empty]
             appr_n = sum(1 for e in filled if (self.state.get(e.date) or {}).get("approved_at"))
@@ -1886,7 +1944,43 @@ class EmployeeView(tk.Frame):
             self.request_state()
         else:
             ui.toast(self.app, "Ошибка одобрения: %s" % result.get("error"), "err")
-            
+
+    # --------------------------------------------------- график и печать
+    def _received_map(self, a, b):
+        return {w: p["payment_date"] for w, p in self.payments.items()
+                if p["confirmed"] and a.isoformat() <= w <= b.isoformat()}
+
+    def _state_days_range(self, a, b):
+        return [self.state[d]["entry"] for d in sorted(self.state.keys())
+                if a.isoformat() <= d <= b.isoformat()]
+
+    def _chart_provider(self, mode):
+        if mode == "month":
+            a, b = month_range(self.current)
+            title = month_title(self.current)
+        elif mode == "year":
+            a, b = dt.date(self.current.year, 1, 1), dt.date(self.current.year, 12, 31)
+            title = "%d год" % self.current.year
+        else:
+            a, b = week_range(self.current)
+            title = "Неделя " + week_title(self.current)
+        return title, self.current, self._state_days_range(a, b)
+
+    def show_chart(self):
+        if not CHARTS_AVAILABLE:
+            ui.toast(self.app, "Модуль графиков не найден: добавьте windows/charts.py", "err"); return
+        name = str(self._meta.get("name") or self.emp.get("name") or "")
+        charts.ChartDialog(self.app, name or "Сотрудник", self._chart_provider, mode="week")
+
+    def print_week(self):
+        a, b = week_range(self.current)
+        days = self._state_days_range(a, b)
+        name = str(self._meta.get("name") or self.emp.get("name") or "")
+        meta = {"employee": name, "organization": "",
+                "rate": str(days[-1].rate) if days else "250", "period": "week",
+                "received": self._received_map(a, b)}
+        _print_pdf_report(self.app, "Неделя %s — %s" % (week_title(self.current), name), days, meta)
+
     def archive_employee(self):
         if self.archived: return
         name = str(self._meta.get("name") or self.emp.get("name") or "")
@@ -2043,7 +2137,6 @@ class EmployeeView(tk.Frame):
             self.set_labels[key] = v
         tk.Label(c.body, text="Ставки и значения по умолчанию редактирует сам сотрудник на своём устройстве. Здесь они отображаются для контроля.",
                  bg=T["surface"], fg=T["text_muted"], font=F_SMALL, wraplength=720, justify="left").pack(anchor="w", pady=(12, 0))
-                 
         c2 = Card(root, "Отчёты и копии по сотруднику")
         c2.grid(row=1, column=0, sticky="new", pady=6)
         b2 = c2.body
@@ -2059,15 +2152,10 @@ class EmployeeView(tk.Frame):
         ttk.Button(row2, text="Обновить данные с сервера", style="Ghost.TButton", command=self.request_state).pack(side="left", padx=(8, 0))
         ttk.Button(row2, text="Открыть папку с данными", style="Ghost.TButton", command=self.open_data_folder).pack(side="left", padx=(8, 0))
         ttk.Button(row2, text="Показать токен сотрудника", style="Ghost.TButton", command=self.show_emp_token).pack(side="left", padx=(8, 0))
-        
-        # Кнопки архива/разархива
         if self.archived:
             ttk.Button(row2, text="Вернуть сотрудника из архива", style="Accent.TButton", command=self.unarchive_employee).pack(side="left", padx=(8, 0))
         else:
             ttk.Button(row2, text="Архивировать сотрудника", style="Danger.TButton", command=self.archive_employee).pack(side="left", padx=(8, 0))
-
-    def _state_days_range(self, a, b):
-        return [self.state[d]["entry"] for d in sorted(self.state.keys()) if a.isoformat() <= d <= b.isoformat()]
 
     def export_employee(self, period, fmt):
         name = str(self._meta.get("name") or self.emp.get("name") or "")
@@ -2083,7 +2171,8 @@ class EmployeeView(tk.Frame):
         ext = ".xlsx" if fmt == "xlsx" else ".pdf"
         path = filedialog.asksaveasfilename(defaultextension=ext, initialfile=fname + ext, filetypes=[(ext[1:].upper(), "*" + ext)])
         if not path: return
-        meta = {"employee": name, "organization": "", "rate": str(days[-1].rate) if days else "250", "period": period}
+        meta = {"employee": name, "organization": "", "rate": str(days[-1].rate) if days else "250",
+                "period": period, "received": self._received_map(a, b)}
         try:
             if fmt == "xlsx": reports.export_xlsx(path, title, days, meta)
             else:

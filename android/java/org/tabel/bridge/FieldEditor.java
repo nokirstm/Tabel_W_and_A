@@ -16,7 +16,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 
 public class FieldEditor {
 
-    private static final LinkedBlockingQueue results = new LinkedBlockingQueue<>();
+    private static final LinkedBlockingQueue<String> results = new LinkedBlockingQueue<>();
 
     public static String poll(long timeoutMs) {
         try {

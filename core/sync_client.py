@@ -1,11 +1,10 @@
-# -*- coding: utf-8 -*-
+# -- coding: utf-8 --
 """Сетевой клиент синхронизации.
 ЗЕРКАЛО: core/sync_client.py и android/sync_client.py обязаны совпадать байт-в-байт."""
 import os
 import uuid
 import threading
 import requests
-
 
 class SyncClient:
     def __init__(self, api_url, api_token, device_id_file):
@@ -49,9 +48,6 @@ class SyncClient:
             data["employee_id"] = employee_id
         if employee_token:
             data["employee_token"] = employee_token
-        # Повтор при таймауте: холодный старт Apps Script после публикации
-        # может греться дольше 15 секунд. Для опроса очереди повтор запрещён,
-        # чтобы два опроса не наложились и не пометили команды дважды.
         attempts = 1 if command == "poll_commands" else 2
         last = {"ok": False, "error": "timeout"}
         for _ in range(attempts):
@@ -70,9 +66,7 @@ class SyncClient:
         try:
             resp = requests.get(
                 self.api_url,
-                params={"api_token": self.api_token,
-                        "deviceId": self.device_id,
-                        "markDelivered": "1"},
+                params={"api_token": self.api_token, "deviceId": self.device_id, "markDelivered": "1"},
                 timeout=15)
             return resp.json()
         except requests.exceptions.Timeout:
@@ -111,6 +105,8 @@ class SyncClient:
                     res = self._make_request("fetch_employee_state", {"manager_id": args[0], "manager_token": args[1], "employee_id": args[2]})
                 elif method_name == "archive_employee":
                     res = self._make_request("archive_employee", {"manager_id": args[0], "manager_token": args[1], "employee_id": args[2]})
+                elif method_name == "unarchive_employee":
+                    res = self._make_request("unarchive_employee", {"manager_id": args[0], "manager_token": args[1], "employee_id": args[2]})
                 elif method_name == "list_archived_employees":
                     res = self._make_request("list_archived_employees", {"manager_id": args[0], "manager_token": args[1]})
                 elif method_name == "payment_date_entered":
@@ -126,5 +122,4 @@ class SyncClient:
             except Exception as e:
                 if callback:
                     callback({"ok": False, "error": str(e)})
-
         threading.Thread(target=worker, daemon=True).start()

@@ -1,5 +1,5 @@
 # -- coding: utf-8 --
-"""Табель — учёт рабочего времени и выплат. Windows (Tkinter). ВЕРСИЯ 2.0.9-chartprint."""
+"""Табель — учёт рабочего времени и выплат. Windows (Tkinter). ВЕРСИЯ 2.0.10-listfix."""
 import os
 import sys
 import json
@@ -41,6 +41,7 @@ SYNC_API_URL = ("https://script.google.com/macros/s/"
 SYNC_API_TOKEN = "28096b2395454f05a7ce7a2b0fcfe3b2e58fd9bed8d5465db4560056a662659c"
 APPROVED_COLOR = "#249d07"
 POLL_MS = 30000
+POLL_MS_BACKOFF = 60000
 QUEUE_MS = 100
 
 WEEK_COLS = ("wd", "date", "time", "hours", "xtime", "xhours", "works",
@@ -444,6 +445,10 @@ class App(tk.Tk):
         self.sync_client = None
         self._chart_mode = "week"
         self._list_cache = {"active": {"ts": 0, "result": None}, "archived": {"ts": 0, "result": None}}
+        # Защита длинных запросов от конкуренции с опросом очереди
+        self._net_in_flight = False
+        self._net_in_flight_since = 0.0
+        self._poll_delay = POLL_MS
 
         if SYNC_AVAILABLE:
             dev_file = os.path.join(os.path.dirname(self.db.path), "device_id.txt")
@@ -453,6 +458,7 @@ class App(tk.Tk):
         self.sync_stats = {"polls": 0, "items": 0, "applied": 0, "skipped": 0}
         self._sync_last_poll = "ещё не было"
         self.sync_log_path = os.path.join(os.path.dirname(self.db.path), "sync_log.txt")
+        self._list_disk_path = os.path.join(os.path.dirname(self.db.path), "list_cache.json")
         self._log_sync("start", "приложение запущено; device_id=%s; creds=%s"
                        % (self.sync_client.device_id if self.sync_client else "-", bool(self._has_role_creds())))
 
@@ -467,7 +473,7 @@ class App(tk.Tk):
         self.bind("<Prior>", lambda e: self.shift_day(-1))
         self.bind("<Next>", lambda e: self.shift_day(1))
         self._after_queue = self.after(QUEUE_MS, self._queue_loop)
-        self._after_poll = self.after(3000, self._poll_loop)
+        self._after_poll = self.after(POLL_MS, self._poll_loop)
         if SYNC_AVAILABLE and not self._has_role_creds():
             self.after(600, self.open_registration)
 
@@ -489,15 +495,52 @@ class App(tk.Tk):
                 f.write("%s [%s] %s\n" % (dt.datetime.now().strftime("%d.%m.%Y %H:%M:%S"), kind, text))
         except Exception: pass
 
+    # ------------------------------------------------ дисковый кэш списков
+    def _save_list_disk(self, key, result):
+        try:
+            data = {}
+            if os.path.exists(self._list_disk_path):
+                with open(self._list_disk_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            data[key] = {"ts": dt.datetime.now().timestamp(), "result": result}
+            with open(self._list_disk_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+        except Exception: pass
+
+    def _load_list_disk(self, key):
+        try:
+            with open(self._list_disk_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            rec = data.get(key) or {}
+            res = rec.get("result") or None
+            if res and res.get("ok"): return res
+        except Exception: pass
+        return None
+
+    def _mark_flight(self):
+        self._net_in_flight = True
+        self._net_in_flight_since = dt.datetime.now().timestamp()
+
+    def _clear_flight(self):
+        self._net_in_flight = False
+
     def _poll_loop(self):
         self._after_poll = None
+        # Пока список/карточка сотрудника в полёте — опрос не стартует,
+        # чтобы не конкурировать за глобальный лок Apps Script.
+        if self._net_in_flight:
+            if dt.datetime.now().timestamp() - self._net_in_flight_since > 45:
+                self._net_in_flight = False
+            else:
+                self._after_poll = self.after(5000, self._poll_loop)
+                return
         try:
             if self.sync_client and self._has_role_creds():
                 self._log_sync("poll", "запрос очереди")
                 self.sync_client.send_async("poll_commands", callback=lambda r: self.sync_queue.put(("poll", r)))
         except Exception as ex:
             self.sync_queue.put(("poll", {"ok": False, "error": str(ex)}))
-        self._after_poll = self.after(POLL_MS, self._poll_loop)
+        self._after_poll = self.after(self._poll_delay, self._poll_loop)
 
     def _poll_now(self):
         if not (SYNC_AVAILABLE and self.sync_client):
@@ -523,9 +566,11 @@ class App(tk.Tk):
                     elif kind == "list_emp":
                         mr = self.manager_root
                         if mr is not None and mr.winfo_exists(): mr.apply_list(rest[0])
+                        else: self._clear_flight()
                     elif kind == "list_arch":
                         mr = self.manager_root
                         if mr is not None and mr.winfo_exists(): mr.apply_archived_list(rest[0])
+                        else: self._clear_flight()
                     elif kind == "archive_emp":
                         mr = self.manager_root
                         if mr is not None and mr.winfo_exists(): mr.on_archive_result(rest[0], rest[1] if len(rest) > 1 else "")
@@ -539,6 +584,7 @@ class App(tk.Tk):
                     elif kind == "emp_state":
                         ev = self._employee_view
                         if ev is not None and ev.winfo_exists(): ev.apply_state(rest[0])
+                        else: self._clear_flight()
                     elif kind == "approve_emp":
                         ev = self._employee_view
                         if ev is not None and ev.winfo_exists(): ev.on_approve_result(rest[0], rest[1] if len(rest) > 1 else "")
@@ -555,9 +601,12 @@ class App(tk.Tk):
         if not result.get("ok"):
             err = str(result.get("error", ""))
             self._log_sync("poll", "ответ сервера: ошибка %s" % err)
+            if err in ("timeout", "no_connection"):
+                self._poll_delay = POLL_MS_BACKOFF
             if err not in ("no_connection", "timeout", "device not registered"): self._sync_last_error = err
             self._update_sync_panel()
             return
+        self._poll_delay = POLL_MS
         self._sync_last_error = ""
         items = result.get("items", []) or []
         self.sync_stats["items"] += len(items)
@@ -1686,31 +1735,46 @@ class ManagerRoot(tk.Frame):
         cache_key = self.list_mode
         cache = self.app._list_cache[cache_key]
         now = dt.datetime.now().timestamp()
-        if cache["result"] is not None:
-            if cache_key == "active": self._apply_list_result(cache["result"])
-            else: self._apply_archived_result(cache["result"])
-            if (now - cache["ts"]) < 60 and not force: return
-        if cache["result"] is None:
-            tk.Label(self.list_frame, text="Загрузка списка…", bg=T["bg"], fg=T["text_muted"], font=F_BODY).pack(pady=24)
+        shown = cache["result"]
+        if shown is None:
+            disk = self.app._load_list_disk(cache_key)
+            if disk is not None:
+                shown = disk
+                cache["result"] = disk
+        if shown is not None:
+            if cache_key == "active": self._apply_list_result(shown)
+            else: self._apply_archived_result(shown)
+            if (now - cache["ts"]) < 60 and not force:
+                return
+            tk.Label(self.list_frame, text="Обновление списка…",
+                     bg=T["bg"], fg=T["text_muted"], font=F_SMALL).pack(pady=(6, 0))
+        else:
+            tk.Label(self.list_frame, text="Загрузка списка…",
+                     bg=T["bg"], fg=T["text_muted"], font=F_BODY).pack(pady=24)
+        self.app._mark_flight()
         if self.list_mode == "active":
             self.app.sync_client.send_async("list_employees", mgr_id, mgr_tok, callback=lambda r: self.app.sync_queue.put(("list_emp", r)))
         else:
             self.app.sync_client.send_async("list_archived_employees", mgr_id, mgr_tok, callback=lambda r: self.app.sync_queue.put(("list_arch", r)))
 
     def apply_list(self, result):
+        self.app._clear_flight()
         self.app._list_cache["active"]["result"] = result
         self.app._list_cache["active"]["ts"] = dt.datetime.now().timestamp()
+        if result.get("ok"): self.app._save_list_disk("active", result)
         if self.list_mode == "active": self._apply_list_result(result)
 
     def apply_archived_list(self, result):
+        self.app._clear_flight()
         self.app._list_cache["archived"]["result"] = result
         self.app._list_cache["archived"]["ts"] = dt.datetime.now().timestamp()
+        if result.get("ok"): self.app._save_list_disk("archived", result)
         if self.list_mode == "archived": self._apply_archived_result(result)
 
     def _apply_list_result(self, result):
         for w in self.list_frame.winfo_children(): w.destroy()
         if not result.get("ok"):
-            self._show_message("Ошибка загрузки списка: %s" % result.get("error")); return
+            self._show_error_retry("Ошибка загрузки списка: %s" % result.get("error")); return
         employees = result.get("employees", []) or []
         if not employees:
             self._show_message("Список сотрудников пуст. Нажмите «+ Добавить сотрудника»."); return
@@ -1726,7 +1790,7 @@ class ManagerRoot(tk.Frame):
     def _apply_archived_result(self, result):
         for w in self.list_frame.winfo_children(): w.destroy()
         if not result.get("ok"):
-            self._show_message("Ошибка загрузки архива: %s" % result.get("error")); return
+            self._show_error_retry("Ошибка загрузки архива: %s" % result.get("error")); return
         employees = result.get("employees", []) or []
         if not employees:
             self._show_message("Архив пуст."); return
@@ -1753,6 +1817,13 @@ class ManagerRoot(tk.Frame):
     def _show_message(self, text):
         for w in self.list_frame.winfo_children(): w.destroy()
         tk.Label(self.list_frame, text=text, bg=T["bg"], fg=T["text_muted"], font=F_BODY, wraplength=700, justify="left").pack(pady=24)
+
+    def _show_error_retry(self, text):
+        for w in self.list_frame.winfo_children(): w.destroy()
+        tk.Label(self.list_frame, text=text, bg=T["bg"], fg=T["text_muted"],
+                 font=F_BODY, wraplength=700, justify="left").pack(pady=24)
+        ttk.Button(self.list_frame, text="Повторить", style="Accent.TButton",
+                   command=lambda: self.refresh_list(force=True)).pack()
 
     def open_add_emp(self): CreateEmployeeDialog(self.app)
 
@@ -1786,6 +1857,7 @@ class EmployeeView(tk.Frame):
         self.payments = {}
         self._meta = {}
         self._chart_mode = "week"
+        self._state_retried = False
 
         top = tk.Frame(self, bg=T["bg"])
         top.pack(fill="x", pady=(0, 10))
@@ -1809,16 +1881,32 @@ class EmployeeView(tk.Frame):
 
     def close(self): self.app.close_employee_view()
 
-    def request_state(self):
+    def request_state(self, auto=False):
         mgr_id = self.app.db.get("manager_id", "")
         mgr_tok = self.app.db.get("manager_token", "")
         if not (mgr_id and mgr_tok): return
+        if auto:
+            if self._state_retried: return
+            self._state_retried = True
+        self.app._mark_flight()
+        if getattr(self, "lbl_state", None) is not None:
+            self.lbl_state.config(text="Загрузка данных сотрудника…")
         self.app.sync_client.send_async("fetch_employee_state", mgr_id, mgr_tok, self.emp["employee_id"],
                                         callback=lambda r: self.app.sync_queue.put(("emp_state", r)))
 
     def apply_state(self, result):
+        self.app._clear_flight()
         if not result.get("ok"):
-            ui.toast(self.app, "Ошибка загрузки данных сотрудника: %s" % result.get("error"), "err"); return
+            err = str(result.get("error", ""))
+            if getattr(self, "lbl_state", None) is not None:
+                self.lbl_state.config(text="Ошибка загрузки данных: %s" % err)
+            if err in ("timeout", "no_connection"):
+                self.after(4000, lambda: self.request_state(auto=True))
+            else:
+                ui.toast(self.app, "Ошибка загрузки данных сотрудника: %s" % err, "err")
+            return
+        if getattr(self, "lbl_state", None) is not None:
+            self.lbl_state.config(text="")
         self._meta = result
         self.state = {}
         for item in result.get("timesheet_state", []) or []:
@@ -1847,7 +1935,7 @@ class EmployeeView(tk.Frame):
 
     def _build_week_tab(self):
         root = self.tab_week
-        root.rowconfigure(1, weight=1)
+        root.rowconfigure(2, weight=1)
         root.columnconfigure(0, weight=1)
         bar = tk.Frame(root, bg=T["surface"], highlightbackground=T["border"], highlightthickness=1)
         bar.grid(row=0, column=0, sticky="ew", pady=(6, 10))
@@ -1862,12 +1950,15 @@ class EmployeeView(tk.Frame):
             tk.Label(bar, text="Клик по квадрату в колонке «Одобрено» = одобрить день", bg=T["surface"], fg=T["text_muted"], font=F_SMALL).pack(side="right", padx=14)
         else:
             tk.Label(bar, text="Режим архива: только чтение", bg=T["surface"], fg=T["text_muted"], font=F_SMALL).pack(side="right", padx=14)
+        self.lbl_state = tk.Label(root, text="Загрузка данных сотрудника…",
+                                  bg=T["bg"], fg=T["text_muted"], font=F_SMALL, anchor="w")
+        self.lbl_state.grid(row=1, column=0, sticky="ew", pady=(0, 4))
         on_approve = None if self.archived else self._approve_date
         self.week_table = WeekTable(root, on_approve=on_approve)
-        self.week_table.grid(row=1, column=0, sticky="nsew")
+        self.week_table.grid(row=2, column=0, sticky="nsew")
         if not self.archived:
             paybar = tk.Frame(root, bg=T["surface"], highlightbackground=T["border"], highlightthickness=1)
-            paybar.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+            paybar.grid(row=3, column=0, sticky="ew", pady=(10, 0))
             self.lbl_week_pay = tk.Label(paybar, text="", bg=T["surface"], fg=T["text"], font=F_BODY_B, anchor="w", padx=12, pady=10)
             self.lbl_week_pay.pack(fill="x")
         else:
@@ -2135,7 +2226,7 @@ class EmployeeView(tk.Frame):
                     fmt_hm_short(e.work_min),
                     (e.works.replace("\n", " ")[:150] or "—") + ("  ✓" if rec.get("approved_at") else ""),
                     fmt_money(e.total_pay)))
-            i += 1
+                i += 1
             wk_buf.append(e)
             if d.weekday() == 6 or d == b:
                 t = Totals(wk_buf)

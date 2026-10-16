@@ -406,16 +406,21 @@ class CreateEmployeeDialog(tk.Toplevel):
         self.btn_ok.pack(side="left")
         ttk.Button(row, text="Отмена", style="Ghost.TButton", command=self.destroy).pack(side="left", padx=(8, 0))
 
-    def submit(self):
+    def submit(self, force_transfer=False):
         name = self.f_name.get().strip()
         birth = _parse_date_ru(self.f_birth.get())
         if not name or birth is None:
             return self.lbl_err.config(text="Заполните ФИО и дату рождения (ДД.ММ.ГГГГ)", fg=T["danger"])
         self.btn_ok.config(state="disabled")
+        self.lbl_err.config(text="Отправка на сервер…", fg=T["text_muted"])
         mgr_id = self.app.db.get("manager_id", "")
         mgr_tok = self.app.db.get("manager_token", "")
+        self.transfer_requested = bool(force_transfer)
         if self.var_attach.get():
-            self.app.sync_client.send_async("attach_employee", mgr_id, mgr_tok, name, birth.isoformat(), callback=lambda r, n=name: self.app.sync_queue.put(("attach_emp", r, n)))
+            if force_transfer:
+                self.app.sync_client.send_async("transfer_employee", mgr_id, mgr_tok, name, birth.isoformat(), callback=lambda r, n=name: self.app.sync_queue.put(("attach_emp", r, n)))
+            else:
+                self.app.sync_client.send_async("attach_employee", mgr_id, mgr_tok, name, birth.isoformat(), callback=lambda r, n=name: self.app.sync_queue.put(("attach_emp", r, n)))
         else:
             self.app.sync_client.send_async("create_employee", mgr_id, mgr_tok, name, birth.isoformat(), callback=lambda r, n=name: self.app.sync_queue.put(("create_emp", r, n)))
 
@@ -754,17 +759,45 @@ class App(tk.Tk):
             ui.toast(self, "Ошибка создания: %s" % result.get("error"), "err")
 
     def _on_attach_result(self, result, name):
+        dlg = self._reg_dialog
+        # Сотрудник работает у другого руководителя — предлагаем перевод.
+        if not result.get("ok") and result.get("status") == "attached_elsewhere":
+            if dlg is not None and dlg.winfo_exists() and not getattr(dlg, "transfer_requested", False):
+                dlg.btn_ok.config(state="normal")
+                answer = messagebox.askyesno(
+                    "Сотрудник у другого руководителя",
+                    "Сотрудник %s уже работает у другого руководителя.\n\n"
+                    "Перевести его к вам? Предыдущий руководитель потеряет доступ "
+                    "к его записям. История дней и выплаты сохранятся, устройства "
+                    "останутся привязанными." % name)
+                if answer:
+                    dlg.submit(force_transfer=True)
+                    return
+            ui.toast(self, "Сотрудник работает у другого руководителя — перевод отменён", "warn")
+            return
         if result.get("ok"):
-            if result.get("status") == "already_attached":
+            status = result.get("status")
+            if status == "already_attached":
                 ui.toast(self, "Сотрудник %s уже был привязан к вам" % name, "warn")
+            elif status == "transferred":
+                ui.toast(self, "Сотрудник %s переведён к вам: история и устройства на месте" % name)
             else:
                 ui.toast(self, "Сотрудник %s привязан: история и устройства на месте" % name)
+            if dlg is not None:
+                try: dlg.destroy()
+                except Exception: pass
             mr = self.manager_root
             if mr is not None and mr.winfo_exists():
                 mr.invalidate_cache()
                 mr.refresh_list(force=True)
         else:
-            ui.toast(self, "Ошибка привязки: %s" % result.get("error"), "err")
+            err = str(result.get("error", "неизвестная ошибка"))
+            self._sync_last_error = err
+            if dlg is not None and dlg.winfo_exists():
+                dlg.lbl_err.config(text=err, fg=T["danger"])
+                dlg.btn_ok.config(state="normal")
+            else:
+                ui.toast(self, "Ошибка привязки: %s" % err, "err")
 
     def _on_restore_result(self, result, name):
         dlg = self._restore_dialog

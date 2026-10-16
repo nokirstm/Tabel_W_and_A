@@ -89,6 +89,8 @@ class SyncClient:
                     res = self._make_request("list_employees", {"manager_id": args[0], "manager_token": args[1]})
                 elif method_name == "attach_employee":
                     res = self._make_request("attach_employee", {"manager_id": args[0], "manager_token": args[1], "name": args[2], "birth_date": args[3]})
+                elif method_name == "transfer_employee":
+                    res = self._make_request("transfer_employee", {"manager_id": args[0], "manager_token": args[1], "name": args[2], "birth_date": args[3]})
                 elif method_name == "bind_device":
                     res = self._make_request("bind_device", {"employee_token": args[0], "name": args[1] if len(args) > 1 else None, "birth_date": args[2] if len(args) > 2 else None})
                 elif method_name == "restore_account":

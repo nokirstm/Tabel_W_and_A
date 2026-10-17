@@ -2,12 +2,17 @@ name: Релиз (Tabel.exe + tabel.apk)
 
 on:
   push:
-    branches: [windows-sync-v2]
+    branches: [windows-sync-v2, android-backup-v1]
     paths:
       - "windows/**"
       - "core/**"
+      - "android/**"
       - ".github/workflows/release.yml"
   workflow_dispatch:
+
+concurrency:
+  group: release-latest
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -15,9 +20,14 @@ permissions:
 jobs:
   windows-exe:
     runs-on: windows-latest
+    outputs:
+      sha: ${{ steps.checkout.outputs.commit }}
     steps:
       - name: Код ветки windows-sync-v2
+        id: checkout
         uses: actions/checkout@v4
+        with:
+          ref: windows-sync-v2
 
       - name: Python
         uses: actions/setup-python@v5
@@ -42,8 +52,11 @@ jobs:
 
   android-apk:
     runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.checkout.outputs.commit }}
     steps:
       - name: Код Android из ветки android-backup-v1
+        id: checkout
         uses: actions/checkout@v4
         with:
           ref: android-backup-v1
@@ -71,7 +84,7 @@ jobs:
           python -m unittest discover -s tests -p 'test_restore.py' -v
           test -f java/org/tabel/bridge/WorksEditor.java
           test -f java/org/tabel/bridge/DocumentReader.java
-          echo "Source commit: $GITHUB_SHA"
+          echo "Source commit: $(git rev-parse HEAD)"
 
       - name: Сборка APK
         working-directory: android
@@ -107,5 +120,7 @@ jobs:
           gh release delete latest --repo "${{ github.repository }}" --yes --cleanup-tag || true
           gh release create latest --repo "${{ github.repository }}" \
             --title "Актуальная сборка (exe + apk)" \
-            --notes "EXE: windows-sync-v2, коммит ${{ github.sha }}. APK: android-backup-v1 на момент сборки." \
+            --notes "EXE: windows-sync-v2 @ ${{ needs.windows-exe.outputs.sha }}
+          APK: android-backup-v1 @ ${{ needs.android-apk.outputs.sha }}
+          Триггер: ${{ github.event_name }}, коммит ${{ github.sha }}" \
             assets/Tabel-windows.exe assets/tabel.apk

@@ -386,6 +386,7 @@ class CreateEmployeeDialog(tk.Toplevel):
     def __init__(self, app):
         super().__init__(app)
         self.app = app
+        app._create_emp_dialog = self
         self.title("Добавить сотрудника")
         self.resizable(False, False)
         self.transient(app)
@@ -762,11 +763,15 @@ class App(tk.Tk):
             ui.toast(self, "Ошибка создания: %s" % result.get("error"), "err")
 
     def _on_attach_result(self, result, name):
-        dlg = self._reg_dialog
+        # Диалог «Добавить сотрудника» (не регистрация): ссылку он оставил в app._create_emp_dialog.
+        dlg = getattr(self, "_create_emp_dialog", None)
+        if dlg is not None and not dlg.winfo_exists():
+            dlg = None
         # Сотрудник работает у другого руководителя — предлагаем перевод.
         if not result.get("ok") and result.get("status") == "attached_elsewhere":
-            if dlg is not None and dlg.winfo_exists() and not getattr(dlg, "transfer_requested", False):
+            if dlg is not None and not getattr(dlg, "transfer_requested", False):
                 dlg.btn_ok.config(state="normal")
+                dlg.lbl_err.config(text="Сотрудник числится у другого руководителя.", fg=T["warn"])
                 answer = messagebox.askyesno(
                     "Сотрудник у другого руководителя",
                     "Сотрудник %s уже работает у другого руководителя.\n\n"
@@ -776,6 +781,9 @@ class App(tk.Tk):
                 if answer:
                     dlg.submit(force_transfer=True)
                     return
+            if dlg is not None:
+                dlg.btn_ok.config(state="normal")
+                dlg.lbl_err.config(text="Перевод отменён: сотрудник остаётся у прежнего руководителя.", fg=T["danger"])
             ui.toast(self, "Сотрудник работает у другого руководителя — перевод отменён", "warn")
             return
         if result.get("ok"):
@@ -789,6 +797,7 @@ class App(tk.Tk):
             if dlg is not None:
                 try: dlg.destroy()
                 except Exception: pass
+            self._create_emp_dialog = None
             mr = self.manager_root
             if mr is not None and mr.winfo_exists():
                 mr.invalidate_cache()
@@ -796,7 +805,7 @@ class App(tk.Tk):
         else:
             err = str(result.get("error", "неизвестная ошибка"))
             self._sync_last_error = err
-            if dlg is not None and dlg.winfo_exists():
+            if dlg is not None:
                 dlg.lbl_err.config(text=err, fg=T["danger"])
                 dlg.btn_ok.config(state="normal")
             else:

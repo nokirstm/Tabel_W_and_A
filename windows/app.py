@@ -2144,7 +2144,7 @@ class EmployeeView(tk.Frame):
         title, anchor, days = self._chart_provider(mode)
         name = str(self._meta.get("name") or self.emp.get("name") or "")
         groups = charts.build_groups(days, mode, anchor)
-        meta = {"employee": name, "organization": ""}
+        meta = {"employee": name, "organization": self.f_org.get().strip()}
         full = "График заработков: %s%s" % (title, (" — " + name) if name else "")
         path = os.path.join(tempfile.gettempdir(),
                             "tabel_chart_%s.pdf" % dt.datetime.now().strftime("%y%m%d_%H%M%S"))
@@ -2316,6 +2316,12 @@ class EmployeeView(tk.Frame):
         c2 = Card(root, "Отчёты и копии по сотруднику")
         c2.grid(row=1, column=0, sticky="new", pady=6)
         b2 = c2.body
+        self.f_org = Field(b2, "Организация / участок (подставляется в отчёты)", width=30, justify="left")
+        self.f_org.set(self.app.db.get("org_" + str(self.emp.get("employee_id", "")), ""))
+        self.f_org.var.trace_add("write",
+                                 lambda *a: self.app.db.set("org_" + str(self.emp.get("employee_id", "")),
+                                                            self.f_org.get().strip()))
+        self.f_org.pack(fill="x", pady=(0, 8))
         row1 = tk.Frame(b2, bg=T["surface"])
         row1.pack(fill="x", pady=3)
         ttk.Button(row1, text="Excel: неделя", style="Ghost.TButton", command=lambda: self.export_employee("week", "xlsx")).pack(side="left")
@@ -2348,7 +2354,8 @@ class EmployeeView(tk.Frame):
         ext = ".xlsx" if fmt == "xlsx" else ".pdf"
         path = filedialog.asksaveasfilename(defaultextension=ext, initialfile=fname + ext, filetypes=[(ext[1:].upper(), "*" + ext)])
         if not path: return
-        meta = {"employee": name, "organization": "", "rate": str(days[-1].rate) if days else "250",
+        meta = {"employee": name, "organization": self.f_org.get().strip(),
+                "rate": str(days[-1].rate) if days else "250",
                 "period": period, "received": self._received_map(a, b)}
         try:
             if fmt == "xlsx": reports.export_xlsx(path, title, days, meta)

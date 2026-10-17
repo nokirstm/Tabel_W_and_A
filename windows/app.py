@@ -1,5 +1,5 @@
 # -- coding: utf-8 --
-"""Табель — учёт рабочего времени и выплат. Windows (Tkinter). ВЕРСИЯ 2.0.10-listfix."""
+"""Табель — учёт рабочего времени и выплат. Windows (Tkinter). ВЕРСИЯ 2.0.11-unlinkfix."""
 import os
 import sys
 import json
@@ -276,8 +276,9 @@ class RegDialog(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self.destroy)
 
     def _refresh_unlink_state(self):
-        emp_id, emp_tok = self.app._employee_creds()
-        state = "normal" if (emp_id and emp_tok) else "disabled"
+        # Кнопка активна, если есть креды ТЕКУЩЕЙ роли: отвязывать нужно именно её запись.
+        role_id, role_tok = self.app._creds()
+        state = "normal" if (role_id and role_tok) else "disabled"
         self.btn_unlink.config(state=state)
 
     def submit(self):
@@ -295,7 +296,9 @@ class RegDialog(tk.Toplevel):
 
     def show_error(self, text):
         if text == "device already registered":
-            text = ("Этот компьютер уже привязан к аккаунту на сервере. Восстановите аккаунт (если он ваш) или нажмите «Отвязать старый аккаунт от этого ПК», чтобы зарегистрировать новую роль. Повторная регистрация существующего работника запрещена сервером.")
+            text = ("Этот компьютер уже привязан к аккаунту на сервере (сотрудник или руководитель). "
+                    "Восстановите аккаунт (если он ваш) или нажмите «Отвязать старый аккаунт от этого ПК», "
+                    "чтобы зарегистрировать новую роль. Повторная регистрация существующего работника запрещена сервером.")
         self.lbl_err.config(text=text, fg=T["danger"])
         self.btn_ok.config(state="normal")
         self._refresh_unlink_state()
@@ -874,13 +877,22 @@ class App(tk.Tk):
 
     def _on_unlinked(self, result):
         dlg = self._reg_dialog
-        if result.get("ok"):
-            self._log_sync("unlink", "компьютер отвязан от аккаунта сотрудника")
+        if result.get("ok") and result.get("status") == "unlinked":
+            self._log_sync("unlink", "компьютер отвязан от старого аккаунта (роль: %s)" % self.role)
             if dlg is not None and dlg.winfo_exists():
-                dlg.lbl_err.config(text="Компьютер отвязан от старого аккаунта сотрудника. Теперь можно регистрировать новую роль.", fg=APPROVED_COLOR)
+                dlg.lbl_err.config(text="Компьютер отвязан от старого аккаунта. Теперь можно регистрировать новую роль.", fg=APPROVED_COLOR)
                 dlg.btn_ok.config(state="normal")
                 dlg.btn_unlink.config(state="disabled")
-            ui.toast(self, "Компьютер отвязан от аккаунта сотрудника")
+            ui.toast(self, "Компьютер отвязан от старого аккаунта")
+        elif result.get("ok") and result.get("status") == "not_linked":
+            # Сервер ответил ok, но привязки у этой роли не было: ничего не снято.
+            self._log_sync("unlink", "ответ not_linked: аккаунт текущей роли не привязан к этому ПК")
+            if dlg is not None and dlg.winfo_exists():
+                dlg.lbl_err.config(text="Этот аккаунт не привязан к данному ПК — отвязывать нечего. "
+                                         "Если сервер снова скажет «компьютер уже привязан», "
+                                         "привязка осталась у другой роли: обновите приложение.", fg=T["warn"])
+                dlg.btn_ok.config(state="normal")
+            ui.toast(self, "Аккаунт не был привязан к этому ПК — привязка не снята", "warn")
         else:
             err = str(result.get("error", "неизвестная ошибка"))
             self._log_sync("unlink", "ошибка: %s" % err)
@@ -888,10 +900,12 @@ class App(tk.Tk):
             else: ui.toast(self, "Отвязка не удалась: " + err, "err")
 
     def start_unlink(self):
-        emp_id, emp_tok = self._employee_creds()
-        if not (emp_id and emp_tok):
+        # Отвязываем запись ТЕКУЩЕЙ роли: у руководителя это manager_id/manager_token,
+        # иначе сервер снимет привязку не с той строки и регистрация останется заблокированной.
+        role_id, role_tok = self._creds()
+        if not (role_id and role_tok):
             ui.toast(self, "На этом ПК нет сохранённых данных старого аккаунта — используйте «Восстановить аккаунт»", "warn"); return
-        self.sync_client.send_async("unlink_windows", emp_id, emp_tok, callback=lambda r: self.sync_queue.put(("unlinked", r)))
+        self.sync_client.send_async("unlink_windows", role_id, role_tok, callback=lambda r: self.sync_queue.put(("unlinked", r)))
 
     def open_registration(self):
         if not (SYNC_AVAILABLE and self.sync_client): return

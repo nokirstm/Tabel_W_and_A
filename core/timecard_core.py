@@ -1,7 +1,9 @@
-# -*- coding: utf-8 -*-
-"""Ядро учёта рабочего времени и выплат. ВЕРСИЯ 2.0.0.
+# -- coding: utf-8 --
+"""Ядро учёта рабочего времени и выплат. ВЕРСИЯ 2.0.1-rounding.
 Надмножество версии 1.1.3: сохранены штрафы и схема настроек received_*,
-добавлены поля синхронизации version/sync_status и employee_id для фильтрации."""
+добавлены поля синхронизации version/sync_status и employee_id для фильтрации.
+Правило округления 2.0.1: все денежные величины округляются до целого рубля
+В МОМЕНТ РАСЧЁТА (round_ruble), поэтому суммы колонок сходятся с итогами."""
 import os
 import re
 import json
@@ -15,7 +17,6 @@ WEEKDAYS_RU = ["Понедельник", "Вторник", "Среда", "Чет
 WEEKDAYS_RU_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 MONTHS_RU = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
 MONTHS_RU_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"]
-
 THEME = {
     "bg": "#E7EDF3", "surface": "#F4F8FC", "surface_alt": "#DEE7F0",
     "border": "#C3D2E0", "accent": "#5B9BD5", "accent_dark": "#417CB8",
@@ -23,9 +24,15 @@ THEME = {
     "ok": "#4C9A6A", "warn": "#C87A3E", "danger": "#B5544B", "white": "#FFFFFF",
 }
 
+def round_ruble(value):
+    """Округление до целого рубля «половина вверх», знакобезопасно.
+    Единая точка округления: расчёт и отображение используют её же."""
+    x = float(value or 0)
+    return int(x + 0.5) if x >= 0 else -int(-x + 0.5)
+
 def parse_time(text):
     if text is None: return None
-    s = str(text).strip().replace(",", ".").replace(";", ".").replace("  ", " ").replace(".", ":")
+    s = str(text).strip().replace(",", ".").replace(";", ".").replace(" ", "").replace(".", ":")
     if not s: return None
     if ":" in s:
         parts = s.split(":")
@@ -44,7 +51,7 @@ def parse_time(text):
 
 def parse_duration(text):
     if text is None: return 0
-    s = str(text).strip().replace(",", ".").replace(";", ".").replace("  ", " ").replace(".", ":")
+    s = str(text).strip().replace(",", ".").replace(";", ".").replace(" ", "").replace(".", ":")
     if not s: return 0
     if ":" in s:
         parts = s.split(":")
@@ -72,7 +79,7 @@ def fmt_hm_short(minutes):
     return "%d.%02d" % (minutes // 60, minutes % 60)
 
 def fmt_money(value):
-    v = round(float(value or 0))
+    v = round_ruble(value)
     return "{:,}".format(v).replace(",", " ") + " ₽"
 
 def span_minutes(start, end):
@@ -104,7 +111,7 @@ class DayEntry:
     approved_at: str = ""
     version: int = 1
     sync_status: str = "local"
-    employee_id: str = ""  # НОВОЕ: для фильтрации дней сотрудников у руководителя
+    employee_id: str = ""  # для фильтрации дней сотрудников у руководителя
 
     @property
     def work_min(self):
@@ -121,21 +128,27 @@ class DayEntry:
     def total_min(self): return self.work_min + self.extra_min
 
     @property
-    def day_pay(self): return self.work_min / 60.0 * float(self.rate or 0)
+    def day_pay(self):
+        return round_ruble(self.work_min / 60.0 * float(self.rate or 0))
 
     @property
     def extra_pay(self):
-        if not self.extra_on: return 0.0
-        if self.extra_use_fixed: return float(self.extra_fixed or 0)
-        return self.extra_min / 60.0 * float(self.extra_rate or 0)
+        if not self.extra_on: return 0
+        if self.extra_use_fixed: return round_ruble(self.extra_fixed or 0)
+        return round_ruble(self.extra_min / 60.0 * float(self.extra_rate or 0))
+
+    @property
+    def bonus_pay(self):
+        return round_ruble(self.bonus or 0)
 
     @property
     def penalty_pay(self):
-        if not self.penalty_on: return 0.0
-        return float(self.penalty or 0)
+        if not self.penalty_on: return 0
+        return round_ruble(self.penalty or 0)
 
     @property
-    def total_pay(self): return self.day_pay + self.extra_pay + float(self.bonus or 0) - self.penalty_pay
+    def total_pay(self):
+        return self.day_pay + self.extra_pay + self.bonus_pay - self.penalty_pay
 
     @property
     def date_obj(self): return dt.date.fromisoformat(self.date)
@@ -145,7 +158,7 @@ class DayEntry:
 
     @property
     def is_empty(self):
-        return (self.start is None and self.end is None and not self.works.strip() 
+        return (self.start is None and self.end is None and not self.works.strip()
                 and not self.extra_on and not float(self.bonus or 0))
 
     def to_dict(self): return asdict(self)
@@ -163,14 +176,18 @@ class DayEntry:
         return DayEntry(**d)
 
 def week_start(d): return d - dt.timedelta(days=d.weekday())
+
 def week_range(d):
     ws = week_start(d)
     return ws, ws + dt.timedelta(days=6)
+
 def week_title(d):
     a, b = week_range(d)
     if a.month == b.month: return "%d–%d %s %d" % (a.day, b.day, MONTHS_RU_GEN[a.month - 1], a.year)
     return "%d %s – %d %s %d" % (a.day, MONTHS_RU_GEN[a.month - 1], b.day, MONTHS_RU_GEN[b.month - 1], b.year)
+
 def month_title(d): return "%s %d" % (MONTHS_RU[d.month - 1], d.year)
+
 def month_range(d):
     first = d.replace(day=1)
     if d.month == 12: last = d.replace(day=31)
@@ -185,7 +202,7 @@ class Totals:
         self.total_min = self.work_min + self.extra_min
         self.day_pay = sum(e.day_pay for e in self.days)
         self.extra_pay = sum(e.extra_pay for e in self.days)
-        self.bonus = sum(float(e.bonus or 0) for e in self.days)
+        self.bonus = sum(e.bonus_pay for e in self.days)
         self.penalty = sum(e.penalty_pay for e in self.days)
         self.total_pay = self.day_pay + self.extra_pay + self.bonus - self.penalty
         self.worked_days = len(self.days)
@@ -365,6 +382,7 @@ class Storage:
 
     def week_received(self, anchor): return self.get("received_week_" + self._monday(anchor), "0") == "1"
     def received_on(self, anchor): return self.get("received_on_" + self._monday(anchor), "")
+
     def set_received(self, anchor, iso_date):
         m = self._monday(anchor)
         self.set("received_week_" + m, "1")

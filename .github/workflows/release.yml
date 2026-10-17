@@ -31,13 +31,14 @@ jobs:
           pip install pyinstaller
 
       - name: Сборка EXE
-        run: pyinstaller windows/tabel.spec --noconfirm --distpath dist --workpath build
+        working-directory: windows
+        run: pyinstaller tabel.spec --noconfirm --distpath dist --workpath build
 
       - name: Артефакт EXE
         uses: actions/upload-artifact@v4
         with:
           name: Tabel-windows-exe
-          path: dist/*.exe
+          path: windows/dist/*.exe
 
   android-apk:
     runs-on: ubuntu-latest
@@ -61,7 +62,7 @@ jobs:
       - name: Системные пакеты и buildozer
         run: |
           sudo apt-get update
-          sudo apt-get install -y zip unzip autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev
+          sudo apt-get install -y --no-install-recommends zip unzip autoconf libtool pkg-config zlib1g-dev libffi-dev libssl-dev cmake
           python -m pip install --upgrade pip
           pip install buildozer cython
 

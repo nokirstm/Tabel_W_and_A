@@ -116,43 +116,56 @@
 - **Сервер:** Google-аккаунт владельца проекта для развёртывания Apps Script.
 
 ### Windows (EXE)
+
 ```bash
 git clone https://github.com/nokirstm/Tabel_W_and_A.git
 cd Tabel_W_and_A/windows
 pip install -r requirements.txt
 build_exe.bat
+```
 
-Готовый файл локальной сборки: windows/dist/Tabel.exe (имя задаёт строка name="Tabel" в windows/tabel.spec). Релизный workflow дополнительно переименовывает артефакт в Tabel-windows.exe — поэтому на странице Releases имя другое, чем после локальной сборки.
+Готовый файл локальной сборки: `windows/dist/Tabel.exe` (имя задаёт строка `name="Tabel"` в `windows/tabel.spec`). Релизный workflow переименовывает артефакт в `Tabel-windows.exe` — поэтому на странице Releases имя другое, чем после локальной сборки.
+
 Запуск без сборки (для разработки):
+
 ```bash
 python windows/app.py
+```
 
-Android (APK)
+### Android (APK)
 
-## ⚠️ APK собирается только на Linux (или WSL на Windows).
+⚠️ APK собирается только на Linux (или WSL на Windows).
+
 ```bash
 git clone https://github.com/nokirstm/Tabel_W_and_A.git
 cd Tabel_W_and_A/android
 chmod +x build_apk.sh
 ./build_apk.sh
+```
 
-Готовый файл: android/bin/tabel-2.0.0-arm64-v8a_armeabi-v7a-debug.apk.
-Имя файла собирает Buildozer из трёх полей buildozer.spec: package.name (tabel) + version (2.0.0) + список архитектур (arm64-v8a, armeabi-v7a). Релизный workflow переименовывает его в tabel.apk, а на телефоне приложение называется «Табель 2.0» по полю title. Три разных имени одного и того же артефакта — это штатное поведение, а не ошибка.
+Готовый файл: `android/bin/tabel-2.0.0-arm64-v8a_armeabi-v7a-debug.apk`.
+
+> Имя файла собирает Buildozer из трёх полей `buildozer.spec`: `package.name` (tabel) + `version` (2.0.0) + список архитектур (arm64-v8a, armeabi-v7a). Релизный workflow переименовывает его в `tabel.apk`, а на телефоне приложение называется «Табель 2.0» по полю `title`. Три разных имени одного и того же артефакта — это штатное поведение, а не ошибка.
+
 Запуск на компьютере (для отладки UI):
+
 ```bash
 pip install kivy==2.1.0
 python android/main.py
+```
 
-Сервер (Google Apps Script, только для владельца проекта)
-Исходник code.gs живёт в редакторе Apps Script и не хранится в репозитории.
+### Сервер (Google Apps Script, только для владельца проекта)
+
+Исходник `code.gs` живёт в редакторе Apps Script и не хранится в репозитории.
 Правила сопровождения:
-Правки вносятся только полной заменой файла code.gs.
-После замены публикуется новая версия того же развёртывания — URL обязан оставаться постоянным.
-URL развёртывания прописан в клиентах константой SYNC_API_URL.
-Проверка здоровья сервера: браузерный GET <SYNC_API_URL>?api_token=…&deviceId=probe-001 должен ответить device not registered.
+1. Правки вносятся только полной заменой файла `code.gs`.
+2. После замены публикуется **новая версия того же развёртывания** — URL обязан оставаться постоянным.
+3. URL развёртывания прописан в клиентах константой `SYNC_API_URL`.
+4. Проверка здоровья сервера: браузерный GET `<SYNC_API_URL>?api_token=…&deviceId=probe-001` должен ответить `device not registered`.
 
 ## 📁 Структура проекта
 
+```
 Tabel_W_and_A/
 ├── core/                        # Общее ядро (зеркало для android/, байт-в-байт)
 │   ├── timecard_core.py         # Расчёты, модель дня, SQLite, палитра (2.0.1-rounding)
@@ -195,12 +208,13 @@ Tabel_W_and_A/
 ├── test_core.py                 # Тесты расчётов ядра
 ├── test_gui_smoke.py            # Smoke-тест окна Windows
 └── test_android_smoke.py        # Smoke-тест экранов Android
+```
 
 ## 📸 Скриншоты
 
-Примеры экранов лежат в папке screenshots/:
-Windows: список сотрудников, карточка с неделей, график, печатная карточка;
-Android: форма дня, неделя, настройки.
+Примеры экранов лежат в папке [`screenshots/`](https://github.com/nokirstm/Tabel_W_and_A/tree/main/screenshots):
+- Windows: список сотрудников, карточка с неделей, график, печатная карточка;
+- Android: форма дня, неделя, настройки.
 
 ## 🧪 Тестирование
 
@@ -208,25 +222,28 @@ Android: форма дня, неделя, настройки.
 python test_core.py            # расчёты ядра (округление, итоги, недели)
 python test_gui_smoke.py       # smoke-старт окна Windows в обеих ролях
 python test_android_smoke.py   # smoke-проверка экранов Android (нужен kivy)
+```
 
 ## 🔧 Технологии
 
-Windows: Python 3.10+, Tkinter, ReportLab, openpyxl, PyInstaller
-Android: Python 3.11, Kivy 2.1.0, requests, certifi; python-for-android v2024.01.21 (bootstrap sdl2); API 34, minApi 21, NDK 25b; архитектуры arm64-v8a + armeabi-v7a; JNI-мосты (jnius)
-Сервер: Google Apps Script (Web App, один URL), Google Sheets как БД и очередь команд
-CI/CD: GitHub Actions: build.yml, эталонный android.yml, релизный release.yml v3
-Хранение: SQLite локально на каждом устройстве, Google Sheets в облаке
+| Компонент | Технологии |
+|---|---|
+| **Windows** | Python 3.10+, Tkinter, ReportLab, openpyxl, PyInstaller |
+| **Android** | Python 3.11, Kivy 2.1.0, requests, certifi; python-for-android v2024.01.21 (bootstrap sdl2); API 34, minApi 21, NDK 25b; архитектуры arm64-v8a + armeabi-v7a; JNI-мосты (jnius) |
+| **Сервер** | Google Apps Script (Web App, один URL), Google Sheets как БД и очередь команд |
+| **CI/CD** | GitHub Actions: `build.yml`, эталонный `android.yml`, релизный `release.yml` v3 |
+| **Хранение** | SQLite локально на каждом устройстве, Google Sheets в облаке |
 
 ## 🤝 Вклад в проект
 
-Форкните репозиторий и создайте ветку от windows-sync-v2 или android-backup-v1 (ветка main устарела и не используется).
-Перед коммитом прогоните test_core.py и smoke-тесты обеих ролей.
-Соблюдайте правила сопровождения:
-правки core/ немедленно зеркалятся в android/ байт-в-байт;
-правки Windows (app.py, ui_kit.py, reports.py, charts.py) передаются только полными файлами;
-code.gs не правится точечными вставками — только полная замена и публикация новой версии развёртывания;
-новые apt-пакеты для Buildozer сверяются с эталонным .github/workflows/android.yml.
-Откройте Pull Request с описанием симптома, причины и проверки.
+1. Форкните репозиторий и создайте ветку от `windows-sync-v2` или `android-backup-v1` (ветка `main` устарела и не используется).
+2. Перед коммитом прогоните `test_core.py` и smoke-тесты обеих ролей.
+3. Соблюдайте правила сопровождения:
+   - правки `core/` немедленно зеркалятся в `android/` байт-в-байт;
+   - правки Windows (`app.py`, `ui_kit.py`, `reports.py`, `charts.py`) передаются только полными файлами;
+   - `code.gs` не правится точечными вставками — только полная замена и публикация новой версии развёртывания;
+   - новые apt-пакеты для Buildozer сверяются с эталонным `.github/workflows/android.yml`.
+4. Откройте Pull Request с описанием симптома, причины и проверки.
 
 ## 📝 Лицензия
 
@@ -234,7 +251,7 @@ code.gs не правится точечными вставками — толь
 
 ## 👨💻 Автор
 
-Руслан — nokirstm
+**Руслан** — [nokirstm](https://github.com/nokirstm)
 
 ## 📞 Поддержка
 
